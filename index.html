@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Strands Sandbox v28</title>
+    <title>Strands Sandbox v30</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <style>
         body {
@@ -21,10 +21,10 @@
         
         .version { 
             font-size: 0.9rem; 
-            color: #ffffff; 
+            color: #059669; /* Emerald */
             font-weight: bold;
             margin-bottom: 15px; 
-            background: #4f46e5; /* Indigo */
+            background: #d1fae5;
             padding: 2px 8px;
             border-radius: 4px;
         }
@@ -96,17 +96,6 @@
         }
         button.primary:active { transform: scale(0.98); }
 
-        button.action {
-            background-color: #f3f4f6;
-            color: #374151;
-            font-size: 14px;
-            padding: 12px;
-            border-radius: 12px;
-            border: 1px solid #d1d5db;
-            font-weight: 600;
-            flex: 1;
-        }
-        
         .controls { margin-top: 20px; display: flex; gap: 10px; }
         button.secondary {
             padding: 10px 16px;
@@ -130,15 +119,14 @@
 <body>
 
     <h1>Strands Sandbox</h1>
-    <div class="version">v28.0 (Hybrid Engine)</div>
+    <div class="version">v30.0 (Auto-Detect)</div>
     
     <div class="btn-group">
-        <button class="primary" onclick="triggerPaste()">📋 Paste</button>
-        <button class="action" id="crop-btn" onclick="toggleCropMode()">Mode: AUTO</button>
+        <button class="primary" onclick="triggerPaste()">📋 Paste Image</button>
     </div>
 
     <div id="status">
-        Paste a FULL screenshot.
+        Ready. Paste any screenshot.
     </div>
 
     <div id="grid-container"></div>
@@ -149,7 +137,7 @@
     </div>
     
     <div style="font-size:10px; color:#999; margin-top:20px">
-        Robot View (Stitched & Normalized):
+        Robot View (Processed Input):
     </div>
     <canvas id="proc-canvas"></canvas>
 
@@ -157,11 +145,9 @@
         const gridContainer = document.getElementById('grid-container');
         const statusDiv = document.getElementById('status');
         const canvas = document.getElementById('proc-canvas');
-        const cropBtn = document.getElementById('crop-btn');
         const ctx = canvas.getContext('2d');
 
         let lastBitmap = null;
-        let forceManualCrop = false; 
 
         function initGrid() {
             gridContainer.innerHTML = '';
@@ -220,13 +206,6 @@
             }
         });
 
-        function toggleCropMode() {
-            forceManualCrop = !forceManualCrop;
-            cropBtn.innerText = forceManualCrop ? "Mode: MANUAL" : "Mode: AUTO";
-            statusDiv.innerHTML = forceManualCrop ? "Use Cropped Image." : "Use Full Screenshot.";
-            if(lastBitmap) runProcessing();
-        }
-
         async function processImage(blob) {
             statusDiv.innerHTML = "Processing...";
             lastBitmap = await createImageBitmap(blob);
@@ -245,73 +224,73 @@
             const imgData = tCtx.getImageData(0, 0, w, h);
             const data = imgData.data;
 
-            // --- 1. SKYSCRAPER AUTO-CROP ---
+            // --- V30: DENSITY CLUSTERING (True Auto-Crop) ---
+            statusDiv.innerHTML = "Scanning layout...";
+
+            let activeRuns = [];
+            let currentRun = null;
+
+            // 1. Scan rows for "activity" (brightness > 60)
+            for(let y=0; y<h; y+=5) { 
+                let rowHasBright = false;
+                let brightCount = 0;
+                for(let x=0; x<w; x+=10) {
+                    const i = (y*w + x)*4;
+                    if ((data[i]+data[i+1]+data[i+2])/3 > 60) {
+                        brightCount++;
+                    }
+                }
+                // A row is "active" if it has a decent amount of content (>5% width)
+                if(brightCount > (w/10 * 0.05)) rowHasBright = true;
+
+                if(rowHasBright) {
+                    if(!currentRun) currentRun = { start: y, end: y };
+                    else currentRun.end = y;
+                } else {
+                    if(currentRun) {
+                        // Keep runs that are at least 50px tall
+                        if((currentRun.end - currentRun.start) > 50) activeRuns.push(currentRun);
+                        currentRun = null;
+                    }
+                }
+            }
+            if(currentRun && (currentRun.end - currentRun.start) > 50) activeRuns.push(currentRun);
+
+            // 2. Pick the Winner (The Tallest Block)
+            let bestRun = null;
+            let maxLen = 0;
+            activeRuns.forEach(run => {
+                const len = run.end - run.start;
+                if(len > maxLen) { maxLen = len; bestRun = run; }
+            });
+
+            // 3. Define the Crop Box
             let minX=0, maxX=w, minY=0, maxY=h;
 
-            if (!forceManualCrop) {
-                statusDiv.innerHTML = "Auto-detecting grid...";
-                let activeRuns = [];
-                let currentRun = null;
-
-                // Scan for brightness activity
-                for(let y=0; y<h; y+=5) { 
-                    let rowHasBright = false;
-                    for(let x=0; x<w; x+=10) {
-                        const i = (y*w + x)*4;
-                        // Look for bright pixels (letters or circles)
-                        if ((data[i]+data[i+1]+data[i+2])/3 > 60) {
-                            rowHasBright = true;
-                            break;
-                        }
-                    }
-
-                    if(rowHasBright) {
-                        if(!currentRun) currentRun = { start: y, end: y };
-                        else currentRun.end = y;
-                    } else {
-                        if(currentRun) {
-                            // Must be tall enough to be the grid (>15% of image height)
-                            if((currentRun.end - currentRun.start) > (h * 0.15)) activeRuns.push(currentRun);
-                            currentRun = null;
-                        }
-                    }
-                }
-                if(currentRun && (currentRun.end - currentRun.start) > (h * 0.15)) activeRuns.push(currentRun);
-
-                // Find tallest run
-                let bestRun = null;
-                let maxLen = 0;
-                activeRuns.forEach(run => {
-                    const len = run.end - run.start;
-                    if(len > maxLen) { maxLen = len; bestRun = run; }
-                });
-
-                if(bestRun) {
-                    minY = bestRun.start;
-                    maxY = bestRun.end;
-                    // Find width within this height bound
-                    let realMinX = w, realMaxX = 0;
-                    for(let y=minY; y<maxY; y+=10) {
-                         for(let x=0; x<w; x+=10) {
-                             const i = (y*w + x)*4;
-                             if ((data[i]+data[i+1]+data[i+2])/3 > 60) {
-                                 if(x < realMinX) realMinX = x;
-                                 if(x > realMaxX) realMaxX = x;
-                             }
+            if(bestRun) {
+                minY = bestRun.start;
+                maxY = bestRun.end;
+                
+                // Find horizontal bounds within this vertical block
+                let realMinX = w, realMaxX = 0;
+                for(let y=minY; y<maxY; y+=10) {
+                     for(let x=0; x<w; x+=10) {
+                         const i = (y*w + x)*4;
+                         if ((data[i]+data[i+1]+data[i+2])/3 > 60) {
+                             if(x < realMinX) realMinX = x;
+                             if(x > realMaxX) realMaxX = x;
                          }
-                    }
-                    // Add padding back
-                    minX = Math.max(0, realMinX - 20);
-                    maxX = Math.min(w, realMaxX + 20);
-                    minY = Math.max(0, minY - 20);
-                    maxY = Math.min(h, maxY + 20);
+                     }
                 }
-            } 
-
-            // Fallback if auto-crop fails
-            if (maxX <= minX + 50 || maxY <= minY + 50) { 
-                 minX = 0; maxX = w; minY = 0; maxY = h; 
-                 if(!forceManualCrop) statusDiv.innerHTML = "Auto-crop failed. Using full image.";
+                
+                // Add Padding (Critical for letters near edge)
+                const pad = 20; 
+                minX = Math.max(0, realMinX - pad);
+                maxX = Math.min(w, realMaxX + pad);
+                minY = Math.max(0, minY - pad);
+                maxY = Math.min(h, maxY + pad);
+            } else {
+                statusDiv.innerHTML = "Auto-detect failed. Using full image.";
             }
 
             const gridW = maxX - minX;
@@ -319,7 +298,7 @@
             const cellW = gridW / 6;
             const cellH = gridH / 8;
 
-            // --- 2. GLOBAL CONSENSUS (Invert Decision) ---
+            // --- GLOBAL CONSENSUS (Dark Mode Check) ---
             let darkPixels = 0;
             let totalPixels = 0;
             
@@ -332,12 +311,10 @@
 
             for(let i=0; i<cropData.length; i+=4) {
                 const lum = (cropData[i]+cropData[i+1]+cropData[i+2])/3;
-                if(lum < 100) darkPixels++;
+                if(lum < 80) darkPixels++; // Stricter dark threshold
                 totalPixels++;
             }
-            
-            // If > 50% dark, treat as Unsolved/Dark Mode
-            const isUnsolvedMode = (darkPixels / totalPixels) > 0.5;
+            const isUnsolvedMode = (darkPixels / totalPixels) > 0.4;
 
             // Setup Stitched Canvas
             canvas.width = 600; 
@@ -345,15 +322,13 @@
             ctx.fillStyle = "white"; 
             ctx.fillRect(0,0,600,800);
 
-            statusDiv.innerHTML = isUnsolvedMode ? "Mode: Dark Puzzle" : "Mode: Light Puzzle";
-            
-            // --- 3. SLICE & STITCH ---
+            // --- SLICE & STITCH ---
             for(let r=0; r<8; r++) {
                 for(let c=0; c<6; c++) {
                     const srcX = minX + (c * cellW);
                     const srcY = minY + (r * cellH);
                     
-                    // v28: Relaxed Padding (12% instead of 15%) to avoid cutting letters
+                    // Padding: 12% (Safe balance)
                     const padX = cellW * 0.12; 
                     const padY = cellH * 0.12;
                     
@@ -364,7 +339,6 @@
                     
                     rawCtx.drawImage(lastBitmap, srcX + padX, srcY + padY, cellW - (padX*2), cellH - (padY*2), 0, 0, cellW, cellH);
 
-                    // Pixel Processing
                     const rawData = rawCtx.getImageData(0,0,cellW,cellH);
                     const rd = rawData.data;
 
@@ -375,12 +349,13 @@
                             r = 255 - r; g = 255 - g; b = 255 - b;
                         }
                         
+                        // Contrast Boost
                         const lum = (r + g + b) / 3;
                         const val = lum < 150 ? 0 : 255;
                         rd[i] = rd[i+1] = rd[i+2] = val;
                     }
                     
-                    // Bold
+                    // Bold Filter
                     const w = cellW;
                     const copy = new Uint8ClampedArray(rd);
                     for(let i=0; i<rd.length; i+=4) {
@@ -393,15 +368,13 @@
                     }
 
                     rawCtx.putImageData(rawData, 0, 0);
-
-                    // Draw to Master Stitched Canvas
-                    // Add 10px padding in the stitched view for clean separation
+                    // Draw to Master (with 10px spacing)
                     ctx.drawImage(rawCanvas, c*100 + 10, r*100 + 10, 80, 80);
                 }
             }
 
-            // --- 4. OCR ---
-            statusDiv.innerHTML += " -> Reading...";
+            // --- OCR ---
+            statusDiv.innerHTML = "Reading...";
             const worker = await Tesseract.createWorker('eng');
             await worker.setParameters({
                 tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
@@ -417,12 +390,12 @@
             symbols.forEach(s => {
                 const cx = (s.bbox.x0 + s.bbox.x1) / 2;
                 const cy = (s.bbox.y0 + s.bbox.y1) / 2;
-                // Map back from 600x800 stitched canvas coords
                 const c = Math.floor(cx / 100);
                 const r = Math.floor(cy / 100);
 
                 let char = s.text.trim().toUpperCase();
                 
+                // Common Corrections
                 if(char === '0') char = 'O';
                 if(char === '|') char = 'I';
                 if(char === '1') char = 'I';
