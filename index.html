@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Strands Sandbox v31.1</title>
-    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <title>Strands Sandbox v31.2</title>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.3/dist/tesseract.min.js"></script>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -21,10 +21,10 @@
         
         .version { 
             font-size: 0.9rem; 
-            color: #f59e0b; /* Amber for v31.1 */
+            color: #ea580c; /* Orange for v31.2 */
             font-weight: bold;
             margin-bottom: 15px; 
-            background: rgba(245, 158, 11, 0.1);
+            background: rgba(234, 88, 12, 0.15);
             padding: 2px 8px;
             border-radius: 4px;
         }
@@ -40,6 +40,16 @@
             max-width: 400px;
             border: 1px solid #3f3f46;
             color: #e4e4e7;
+            min-height: 20px;
+        }
+
+        #progress-bar {
+            width: 0%;
+            height: 4px;
+            background: #ea580c;
+            transition: width 0.3s;
+            margin-top: 8px;
+            border-radius: 2px;
         }
 
         #grid-container {
@@ -70,7 +80,7 @@
         }
 
         .cell.selected { background-color: #3b82f6; border-color: #60a5fa; color: white; }
-        .cell:empty { border-color: #ef4444; opacity: 0.5; }
+        .cell:empty { border-color: #71717a; opacity: 0.5; }
 
         .btn-group {
             display: flex;
@@ -90,6 +100,7 @@
             flex: 1;
             font-weight: bold;
         }
+        button.primary:disabled { opacity: 0.5; background: #555; color: #aaa; }
         button.primary:active { transform: scale(0.98); opacity: 0.9; }
 
         .controls { margin-top: 20px; display: flex; gap: 10px; }
@@ -102,7 +113,6 @@
             color: #a1a1aa;
         }
 
-        /* Debug View */
         #proc-canvas { 
             display: block; 
             margin-top: 15px; 
@@ -118,13 +128,16 @@
 <body>
 
     <h1>Strands Sandbox</h1>
-    <div class="version">v31.1 (Pattern Lock)</div>
+    <div class="version">v31.2 (Safe Loader)</div>
     
     <div class="btn-group">
-        <button class="primary" onclick="triggerPaste()">Paste Image</button>
+        <button id="pasteBtn" class="primary" onclick="triggerPaste()" disabled>Wait...</button>
     </div>
 
-    <div id="status">Loading...</div>
+    <div id="status">
+        Initializing Engine...
+        <div id="progress-bar"></div>
+    </div>
 
     <div id="grid-container"></div>
 
@@ -139,24 +152,61 @@
     <script>
         const gridContainer = document.getElementById('grid-container');
         const statusDiv = document.getElementById('status');
+        const progressBar = document.getElementById('progress-bar');
+        const pasteBtn = document.getElementById('pasteBtn');
         const canvas = document.getElementById('proc-canvas');
         const ctx = canvas.getContext('2d');
 
         let tesseractWorker = null;
+        let isEngineReady = false;
 
-        (async function initOCR() {
+        // --- ROBUST INITIALIZATION ---
+        async function initOCR() {
             try {
-                tesseractWorker = await Tesseract.createWorker('eng');
+                updateStatus("Downloading Engine...", 10);
+                
+                // Create worker with logger to show progress
+                tesseractWorker = await Tesseract.createWorker('eng', 1, {
+                    logger: m => {
+                        if(m.status === 'recognizing text') {
+                            updateStatus(`Reading: ${Math.floor(m.progress * 100)}%`, 0);
+                        } else {
+                            // Map loading progress to 0-100 bar
+                            if(m.status.includes('loading')) updateStatus("Loading Core...", 30);
+                            if(m.status.includes('initializing')) updateStatus("Starting Neural Net...", 60);
+                        }
+                    }
+                });
+
+                updateStatus("Configuring...", 80);
                 await tesseractWorker.setParameters({
                     tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
                     tessedit_pageseg_mode: '6' 
                 });
-                statusDiv.innerText = "Ready. Paste Image.";
-            } catch (e) {
-                statusDiv.innerText = "OCR Failed to Load";
-            }
-        })();
 
+                isEngineReady = true;
+                updateStatus("Ready. Paste Image.", 100);
+                pasteBtn.disabled = false;
+                pasteBtn.innerText = "📋 Paste Image";
+                setTimeout(() => progressBar.style.width = '0%', 1000);
+
+            } catch (e) {
+                console.error(e);
+                statusDiv.innerHTML = `Engine Failed. <button onclick="location.reload()" style="padding:5px; margin-left:10px;">Retry</button>`;
+                progressBar.style.backgroundColor = 'red';
+            }
+        }
+
+        function updateStatus(msg, percent) {
+            // Keep the text part of status
+            statusDiv.childNodes[0].textContent = msg; 
+            if(percent > 0) progressBar.style.width = percent + '%';
+        }
+
+        // Start Init
+        initOCR();
+
+        // --- GRID LOGIC ---
         function initGrid() {
             gridContainer.innerHTML = '';
             for (let r = 0; r < 8; r++) {
@@ -174,7 +224,9 @@
             gridContainer.appendChild(cell);
         }
 
+        // --- PASTE LOGIC ---
         async function triggerPaste() {
+            if(!isEngineReady) return;
             try {
                 const items = await navigator.clipboard.read();
                 for (const item of items) {
@@ -186,11 +238,12 @@
                 }
                 alert("No image on clipboard!");
             } catch (err) {
-                statusDiv.innerText = "Tap 'Allow Paste' when prompted.";
+                statusDiv.childNodes[0].textContent = "Tap 'Allow Paste' when prompted.";
             }
         }
         
         document.addEventListener('paste', (e) => {
+            if(!isEngineReady) return;
             const items = (e.clipboardData || e.originalEvent.clipboardData).items;
             for (const item of items) {
                 if (item.type.indexOf('image') !== -1) {
@@ -201,11 +254,12 @@
         });
 
         async function processImage(blob) {
-            statusDiv.innerText = "Scanning Pattern...";
+            updateStatus("Scanning...", 10);
             const bitmap = await createImageBitmap(blob);
             runProjectionProcessing(bitmap);
         }
 
+        // --- V31 LOGIC: PROJECTION PROFILING ---
         async function runProjectionProcessing(bitmap) {
             const w = bitmap.width;
             const h = bitmap.height;
@@ -215,10 +269,9 @@
             offCanvas.height = h;
             const offCtx = offCanvas.getContext('2d');
             offCtx.drawImage(bitmap, 0, 0);
-            const imgData = offCtx.getImageData(0, 0, w, h);
-            const data = imgData.data;
+            const data = offCtx.getImageData(0, 0, w, h).data;
 
-            // --- PROJECTION PROFILING ---
+            // 1. Build Histogram
             const rowSums = new Array(h).fill(0);
             const colSums = new Array(w).fill(0);
             const marginX = Math.floor(w * 0.1); 
@@ -227,18 +280,17 @@
                 for(let x=marginX; x<w-marginX; x++) {
                     const i = (y*w + x)*4;
                     const r=data[i], g=data[i+1], b=data[i+2];
-                    // Strict "White Text" check
-                    if(r > 120 && g > 120 && b > 120) {
+                    if(r > 100 && g > 100 && b > 100) { // White pixel
                         rowSums[y]++;
                         colSums[x]++;
                     }
                 }
             }
 
-            // --- PEAK DETECTION ---
-            function getPeaks(arr, count) {
+            // 2. Find Peaks
+            function getPeaks(arr) {
                 let peaks = [];
-                let minVal = Math.max(...arr) * 0.25; 
+                let minVal = Math.max(...arr) * 0.2; 
                 let inPulse = false;
                 let startPulse = 0;
                 
@@ -249,10 +301,7 @@
                         if(inPulse) {
                             inPulse = false;
                             const width = i - startPulse;
-                            // Width Filter: Pulse must be substantial (>1% of screen dimension)
-                            if(width > (arr.length * 0.01)) { 
-                                peaks.push(Math.floor(startPulse + width/2));
-                            }
+                            if(width > 10) peaks.push(Math.floor(startPulse + width/2));
                         }
                     }
                 }
@@ -262,45 +311,27 @@
             let rowPeaks = getPeaks(rowSums);
             let colPeaks = getPeaks(colSums);
 
-            // --- v31.1 PATTERN MATCHING LOGIC ---
-            // The header "Theme" text often creates a row peak.
-            // The grid rows are evenly spaced. The Header is usually far above them.
-            
-            if(rowPeaks.length > 8) {
-                // Calculate gaps between adjacent peaks
-                let gaps = [];
-                for(let i=1; i<rowPeaks.length; i++) {
-                    gaps.push({ idx: i, size: rowPeaks[i] - rowPeaks[i-1] });
-                }
-                
-                // Find the run of 8 peaks with the most consistent gaps
-                // Simple heuristic: Take the last 8 (since Grid is always at bottom)
-                // BUT, verify the gap isn't huge (which would imply we picked up a footer)
-                rowPeaks = rowPeaks.slice(-8);
-            }
-            
+            // 3. Filter to 8x6
+            if(rowPeaks.length > 8) rowPeaks = rowPeaks.slice(-8);
             if(colPeaks.length > 6) {
                 const center = Math.floor(colPeaks.length/2);
                 colPeaks = colPeaks.slice(center-3, center+3);
             }
 
             if(rowPeaks.length !== 8 || colPeaks.length !== 6) {
-                statusDiv.innerText = `Pattern Mismatch: Found ${rowPeaks.length} Rows, ${colPeaks.length} Cols.`;
+                updateStatus(`Grid Error: ${rowPeaks.length}R x ${colPeaks.length}C. Crop closer.`, 0);
                 return;
             }
 
-            // --- EXTRACTION ---
-            statusDiv.innerText = "Aligning Grid...";
-            
+            // 4. Extract
+            updateStatus("Extracting...", 50);
             canvas.width = 600;
             canvas.height = 800;
             ctx.fillStyle = "white";
             ctx.fillRect(0,0,600,800);
 
-            // Dynamically calculate crop size based on detected spacing
-            // This handles different screen densities automatically
-            const avgColGap = (colPeaks[5] - colPeaks[0]) / 5;
-            const cropSize = Math.floor(avgColGap * 0.70); 
+            const avgColWidth = (colPeaks[5] - colPeaks[0]) / 5;
+            const cropSize = Math.floor(avgColWidth * 0.65); 
 
             for(let r=0; r<8; r++) {
                 for(let c=0; c<6; c++) {
@@ -317,23 +348,19 @@
                     
                     cCtx.drawImage(bitmap, sx, sy, cropSize, cropSize, 0, 0, cropSize, cropSize);
                     
-                    // Filter: Hard Threshold
                     const cData = cCtx.getImageData(0,0,cropSize,cropSize);
                     const d = cData.data;
                     for(let k=0; k<d.length; k+=4) {
                         const lum = (d[k] + d[k+1] + d[k+2]) / 3;
-                        const val = lum > 100 ? 0 : 255; // White Text -> Black Ink
+                        const val = lum > 100 ? 0 : 255; // Invert to Black Text
                         d[k] = d[k+1] = d[k+2] = val;
                     }
                     cCtx.putImageData(cData, 0, 0);
-
-                    // Place on Master Sheet
-                    ctx.drawImage(cellCan, c*100 + 15, r*100 + 15, 70, 70);
+                    ctx.drawImage(cellCan, c*100 + 20, r*100 + 20, 60, 60);
                 }
             }
 
-            // --- OCR ---
-            statusDiv.innerText = "Deciphering...";
+            // 5. OCR
             const { data: { symbols } } = await tesseractWorker.recognize(canvas);
             
             initGrid();
@@ -347,11 +374,9 @@
                 const r = Math.floor(by / 100);
                 
                 let char = s.text.trim().toUpperCase();
-                // Fixes
                 if(char==='0') char='O';
                 if(char==='|' || char==='1') char='I';
                 if(char==='5') char='S';
-                if(char==='8') char='B';
                 
                 if(c>=0 && c<6 && r>=0 && r<8 && char.match(/[A-Z]/)) {
                     finalGrid[r][c] = char;
@@ -360,4 +385,16 @@
             });
 
             const cells = gridContainer.children;
-            for(let r=0;
+            for(let r=0; r<8; r++) {
+                for(let c=0; c<6; c++) {
+                    const ch = finalGrid[r][c];
+                    if(ch) cells[r*6+c].innerText = ch;
+                }
+            }
+            updateStatus(`Found ${count} letters.`, 100);
+        }
+
+        initGrid();
+    </script>
+</body>
+</html>
