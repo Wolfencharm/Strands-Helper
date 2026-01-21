@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Strands Sandbox v30.2</title>
+    <title>Strands Sandbox v31.0</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <style>
         body {
@@ -21,10 +21,10 @@
         
         .version { 
             font-size: 0.9rem; 
-            color: #c026d3; /* Fuchsia for v30.2 */
+            color: #db2777; /* Pink for v31 */
             font-weight: bold;
             margin-bottom: 15px; 
-            background: #fdf4ff;
+            background: #fce7f3;
             padding: 2px 8px;
             border-radius: 4px;
         }
@@ -113,13 +113,14 @@
             max-width: 90%; 
             height: auto;
             border-radius: 8px;
+            background: #000; /* Visual aid: Black bg to see the white letters */
         }
     </style>
 </head>
 <body>
 
     <h1>Strands Sandbox</h1>
-    <div class="version">v30.2 (Blob Filter)</div>
+    <div class="version">v31.0 (Grid Locking)</div>
     
     <div class="btn-group">
         <button class="primary" onclick="triggerPaste()">📋 Paste Image</button>
@@ -235,177 +236,166 @@
             const w = lastBitmap.width;
             const h = lastBitmap.height;
             
-            const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = w;
-            tempCanvas.height = h;
-            const tCtx = tempCanvas.getContext('2d');
-            tCtx.drawImage(lastBitmap, 0, 0);
-            const imgData = tCtx.getImageData(0, 0, w, h);
+            // 1. Create Analysis Canvas (Grayscale)
+            const anaCanvas = document.createElement('canvas');
+            anaCanvas.width = w;
+            anaCanvas.height = h;
+            const anaCtx = anaCanvas.getContext('2d');
+            anaCtx.drawImage(lastBitmap, 0, 0);
+            const imgData = anaCtx.getImageData(0, 0, w, h);
             const data = imgData.data;
 
-            // --- V30.2: BLOB FILTERING ---
-            statusDiv.innerHTML = "Scanning for grid structure...";
-            let activeRuns = [];
-            let currentRun = null;
+            // --- V31: PROJECTION PROFILING ---
+            statusDiv.innerHTML = "Locking onto grid...";
 
-            // Safety Margin: Ignore top 15% (Status Bar)
-            const startScanY = Math.floor(h * 0.15);
-            const scanStepY = Math.max(1, Math.floor(h / 100)); 
+            // Determine if Dark Mode or Light Mode
+            // Sample center pixel (simplistic but fast)
+            const centerIdx = ((Math.floor(h/2) * w) + Math.floor(w/2)) * 4;
+            const isDarkMode = data[centerIdx] < 128; // If center is dark, it's dark mode
+
+            // Create Binary Map (White Text = 1, Black Bg = 0)
+            const binaryRowSums = new Array(h).fill(0);
+            const binaryColSums = new Array(w).fill(0);
             
-            for(let y = startScanY; y < h; y += scanStepY) { 
-                
-                // 1. Get a horizontal profile of this row
-                let transitions = 0;
-                let inBright = false;
-                let brightBlobs = 0;
-
-                for(let x = 0; x < w; x += 5) {
+            for(let y=0; y<h; y++) {
+                for(let x=0; x<w; x++) {
                     const i = (y*w + x)*4;
-                    const brightness = (data[i] + data[i+1] + data[i+2]) / 3;
-                    const isBright = brightness > 60; // Standard threshold
-
-                    if (isBright && !inBright) {
-                        inBright = true;
-                        brightBlobs++;
-                    } else if (!isBright && inBright) {
-                        inBright = false;
+                    const r = data[i], g = data[i+1], b = data[i+2];
+                    const lum = (r+g+b)/3;
+                    
+                    let isText = false;
+                    if(isDarkMode) {
+                        if(lum > 100) isText = true; // Bright text on dark
+                    } else {
+                        if(lum < 150) isText = true; // Dark text on light
                     }
-                }
 
-                // 2. The Golden Rule: A Grid Row has ~6 blobs. 
-                // A Header row has 15+ (text) or 1 big block.
-                // An empty row has 0.
-                const isValidRow = (brightBlobs >= 4 && brightBlobs <= 8);
-
-                if(isValidRow) {
-                    if(!currentRun) currentRun = { start: y, end: y };
-                    else currentRun.end = y;
-                } else {
-                    if(currentRun) {
-                        // Only keep runs that are "tall enough" to be a grid (at least 1/6th of screen)
-                        if((currentRun.end - currentRun.start) > (h * 0.15)) activeRuns.push(currentRun);
-                        currentRun = null;
+                    if(isText) {
+                        binaryRowSums[y]++;
+                        binaryColSums[x]++;
                     }
                 }
             }
-            if(currentRun && (currentRun.end - currentRun.start) > (h * 0.15)) activeRuns.push(currentRun);
 
-            // Pick Tallest Block
-            let bestRun = null;
-            let maxLen = 0;
-            activeRuns.forEach(run => {
-                const len = run.end - run.start;
-                if(len > maxLen) { maxLen = len; bestRun = run; }
-            });
-
-            // Define Crop Box
-            let minX=0, maxX=w, minY=0, maxY=h;
-
-            if(bestRun) {
-                minY = bestRun.start;
-                maxY = bestRun.end;
+            // --- PEAK DETECTION (ROWS) ---
+            // Find 8 peaks that are roughly equidistant
+            function findPeaks(arr, minGap, minHeight) {
+                let peaks = [];
+                let inPeak = false;
+                let start = 0;
                 
-                // Fine-tune X (Horizontal)
-                let realMinX = w, realMaxX = 0;
-                for(let y=minY; y<maxY; y+=10) {
-                     for(let x=0; x<w; x+=10) {
-                         const i = (y*w + x)*4;
-                         if ((data[i]+data[i+1]+data[i+2])/3 > 60) {
-                             if(x < realMinX) realMinX = x;
-                             if(x > realMaxX) realMaxX = x;
-                         }
-                     }
+                for(let i=0; i<arr.length; i++) {
+                    if(arr[i] > minHeight) {
+                        if(!inPeak) { inPeak = true; start = i; }
+                    } else {
+                        if(inPeak) {
+                            inPeak = false;
+                            const center = Math.floor((start + i) / 2);
+                            // Filter tiny noise peaks
+                            if ((i - start) > 5) peaks.push(center); 
+                        }
+                    }
                 }
-                
-                const pad = 20; 
-                minX = Math.max(0, realMinX - pad);
-                maxX = Math.min(w, realMaxX + pad);
-                minY = Math.max(0, minY - pad);
-                maxY = Math.min(h, maxY + pad);
-            } else {
-                // Fallback: If blob detection fails, try center of screen
-                 minY = h * 0.25;
-                 maxY = h * 0.75;
-                 minX = 0;
-                 maxX = w;
+                return peaks;
             }
 
-            const gridW = maxX - minX;
-            const gridH = maxY - minY;
-            const cellW = Math.floor(gridW / 6);
-            const cellH = Math.floor(gridH / 8);
+            // Adaptive thresholds
+            const rowThreshold = w * 0.02; // A row must have at least 2% of width as text pixels
+            const colThreshold = h * 0.01; 
+            
+            let rowPeaks = findPeaks(binaryRowSums, 10, rowThreshold);
+            let colPeaks = findPeaks(binaryColSums, 10, colThreshold);
 
-            // --- DARK MODE CHECK ---
-            let darkPixels = 0;
-            let totalPixels = 0;
-            const cropCanvas = document.createElement('canvas');
-            cropCanvas.width = 100;
-            cropCanvas.height = 100;
-            const cropCtx = cropCanvas.getContext('2d');
-            cropCtx.drawImage(lastBitmap, minX, minY, gridW, gridH, 0, 0, 100, 100);
-            const cropData = cropCtx.getImageData(0,0,100,100).data;
-            for(let i=0; i<cropData.length; i+=4) {
-                const lum = (cropData[i]+cropData[i+1]+cropData[i+2])/3;
-                if(lum < 80) darkPixels++; 
-                totalPixels++;
+            // INTELLIGENT FILTERING
+            // We want exactly 8 rows and 6 cols.
+            // Heuristic: The grid is usually the largest cluster of peaks with consistent spacing.
+            
+            // Simple fallback: If we found too many, take the set with best spacing coherence
+            // For now: Just taking the last 8 rows (usually grid is at bottom) if > 8
+            // and the middle 6 cols.
+            
+            if(rowPeaks.length > 8) {
+                // Check gaps. The header "Theme" usually has a huge gap before the grid.
+                // We take the last 8 peaks.
+                rowPeaks = rowPeaks.slice(-8); 
             }
-            const isUnsolvedMode = (darkPixels / totalPixels) > 0.4;
+            
+            // For cols, we usually find 6. If we find more (borders?), take the 6 most central.
+            if(colPeaks.length > 6) {
+                const centerIdx = Math.floor(colPeaks.length / 2);
+                colPeaks = colPeaks.slice(centerIdx - 3, centerIdx + 3);
+            }
 
-            // Setup Stitched Canvas
+            if(rowPeaks.length !== 8 || colPeaks.length !== 6) {
+                statusDiv.innerHTML = `Grid Align Error: Found ${rowPeaks.length}R x ${colPeaks.length}C. Try cropping closer.`;
+                // Render debug view anyway so user sees what happened
+            }
+
+            // --- STITCHING (Centered Extraction) ---
+            // We now have exact (x,y) centers for every letter.
+            
             canvas.width = 600; 
             canvas.height = 800;
             ctx.fillStyle = "white"; 
             ctx.fillRect(0,0,600,800);
 
-            // --- STITCH STRATEGY ---
-            for(let r=0; r<8; r++) {
-                for(let c=0; c<6; c++) {
-                    const srcX = minX + (c * cellW);
-                    const srcY = minY + (r * cellH);
+            // Estimate cell size based on gaps
+            const avgRowHeight = (rowPeaks[rowPeaks.length-1] - rowPeaks[0]) / 7;
+            const cropSize = Math.floor(avgRowHeight * 0.85); // 85% of row height
+
+            for(let r=0; r<rowPeaks.length; r++) {
+                for(let c=0; c<colPeaks.length; c++) {
+                    const cx = colPeaks[c];
+                    const cy = rowPeaks[r];
                     
-                    const padX = Math.floor(cellW * 0.15); // Increased padding slightly
-                    const padY = Math.floor(cellH * 0.15);
+                    const srcX = cx - (cropSize/2);
+                    const srcY = cy - (cropSize/2);
                     
+                    // Extract Cell
                     const rawCanvas = document.createElement('canvas');
-                    rawCanvas.width = cellW; 
-                    rawCanvas.height = cellH;
+                    rawCanvas.width = cropSize;
+                    rawCanvas.height = cropSize;
                     const rawCtx = rawCanvas.getContext('2d');
                     
-                    const sX = srcX + padX;
-                    const sY = srcY + padY;
-                    const sW = cellW - (padX*2);
-                    const sH = cellH - (padY*2);
-
-                    if (sX >= 0 && sY >= 0 && (sX+sW) <= w && (sY+sH) <= h) {
-                        rawCtx.drawImage(lastBitmap, sX, sY, sW, sH, 0, 0, cellW, cellH);
-                    }
-
-                    const rawData = rawCtx.getImageData(0,0,cellW,cellH);
-                    const rd = rawData.data;
-
-                    // Pixel Filter
-                    for(let i=0; i<rd.length; i+=4) {
-                        let r = rd[i], g = rd[i+1], b = rd[i+2];
-                        if (isUnsolvedMode) { r = 255 - r; g = 255 - g; b = 255 - b; }
-                        const lum = (r + g + b) / 3;
-                        const val = lum < 150 ? 0 : 255;
-                        rd[i] = rd[i+1] = rd[i+2] = val;
+                    if(srcX >=0 && srcY>=0) {
+                        rawCtx.drawImage(lastBitmap, srcX, srcY, cropSize, cropSize, 0, 0, cropSize, cropSize);
                     }
                     
-                    // Dilation (Bold)
-                    const copy = new Uint8ClampedArray(rd);
-                    for(let i=0; i<rd.length; i+=4) {
-                        if(copy[i] === 0) {
-                            if(i+4 < rd.length) { rd[i+4]=0; rd[i+5]=0; rd[i+6]=0; }
-                            if(i + (cellW*4) < rd.length) { 
-                                const down = i + (cellW*4);
-                                rd[down]=0; rd[down+1]=0; rd[down+2]=0; 
-                            }
+                    const cellData = rawCtx.getImageData(0,0,cropSize,cropSize);
+                    const cd = cellData.data;
+                    
+                    // Invert & Clean
+                    for(let i=0; i<cd.length; i+=4) {
+                        let r = cd[i], g = cd[i+1], b = cd[i+2];
+                        let lum = (r+g+b)/3;
+                        
+                        // Normalization: Always output Black Text on White BG
+                        let isBright = lum > 120;
+                        if(isDarkMode) {
+                            // In dark mode, text is bright. We want text to be black (0).
+                            // So if bright, val = 0. Else 255.
+                            val = isBright ? 0 : 255;
+                        } else {
+                            // In light mode, text is dark. We want text to be black (0).
+                            // So if bright, val = 255. Else 0.
+                            val = isBright ? 255 : 0;
+                        }
+                        cd[i] = cd[i+1] = cd[i+2] = val;
+                    }
+                    
+                    // Bold Filter (Dilation) to help OCR
+                    const copy = new Uint8ClampedArray(cd);
+                    for(let i=0; i<cd.length; i+=4) {
+                        if(copy[i] === 0) { // If black pixel
+                             if(i+4 < cd.length) { cd[i+4]=0; cd[i+5]=0; cd[i+6]=0; }
                         }
                     }
 
-                    rawCtx.putImageData(rawData, 0, 0);
-                    ctx.drawImage(rawCanvas, c*100 + 10, r*100 + 10, 80, 80);
+                    rawCtx.putImageData(cellData, 0, 0);
+                    
+                    // Place into Stitch Map
+                    // We standardise to 100x100 grid cells
+                    ctx.drawImage(rawCanvas, c*100 + 15, r*100 + 15, 70, 70);
                 }
             }
 
@@ -424,6 +414,7 @@
                 const r = Math.floor(cy / 100);
                 let char = s.text.trim().toUpperCase();
                 
+                // Corrections
                 if(char === '0') char = 'O';
                 if(char === '|') char = 'I';
                 if(char === '1') char = 'I';
@@ -443,7 +434,13 @@
                     if(char) cells[r*6 + c].innerText = char;
                 }
             }
-            statusDiv.innerHTML = `Done! Found ${foundCount} letters.`;
+            
+            if(foundCount > 0) {
+                statusDiv.innerHTML = `Done! Found ${foundCount} letters.`;
+            } else {
+                statusDiv.innerHTML = "Retrying with looser filter...";
+                // (Optional: Simple retry logic could go here)
+            }
         }
 
         initGrid();
