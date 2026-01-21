@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Strands Sandbox v32.0</title>
+    <title>Strands Sandbox v32.1</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.3/dist/tesseract.min.js"></script>
     <style>
         body {
@@ -21,10 +21,10 @@
         
         .version { 
             font-size: 0.9rem; 
-            color: #ef4444; /* Red for v32 (Edge) */
+            color: #8b5cf6; /* Violet for v32.1 */
             font-weight: bold;
             margin-bottom: 15px; 
-            background: rgba(239, 68, 68, 0.15);
+            background: rgba(139, 92, 246, 0.15);
             padding: 2px 8px;
             border-radius: 4px;
         }
@@ -119,7 +119,7 @@
 <body>
 
     <h1>Strands Sandbox</h1>
-    <div class="version">v32.0 (Edge Scanner)</div>
+    <div class="version">v32.1 (Grid Snap)</div>
     
     <div class="btn-group">
         <button id="loadBtn" class="primary" onclick="initOCR()">Load Engine</button>
@@ -223,10 +223,10 @@
         async function processImage(blob) {
             statusDiv.textContent = "> Processing...";
             const bitmap = await createImageBitmap(blob);
-            runEdgeScan(bitmap);
+            runSmartScan(bitmap);
         }
 
-        async function runEdgeScan(bitmap) {
+        async function runSmartScan(bitmap) {
             const w = bitmap.width;
             const h = bitmap.height;
             
@@ -238,46 +238,52 @@
 
             log(`Size: ${w}x${h}`);
 
-            // --- V32.0: EDGE DETECTION SCAN ---
-            // Instead of measuring brightness, we measure CONTRAST.
-            // This ignores solid white bars (Header) and sees only text (Grid).
-            
+            // 1. Edge Scan
             const rowEnergy = new Array(h).fill(0);
             const colEnergy = new Array(w).fill(0);
             
-            // Safe Zone (Middle Screen)
             const startY = Math.floor(h * 0.2);
             const endY = Math.floor(h * 0.8);
             const startX = Math.floor(w * 0.05);
             const endX = Math.floor(w * 0.95);
 
             for(let y=startY; y<endY; y++) {
-                // Pre-calculate previous pixel for edge check
-                let prevLum = 0; 
-                
+                let prevLum = 0;
                 for(let x=startX; x<endX; x++) {
                     const i = (y*w + x)*4;
-                    const r=data[i], g=data[i+1], b=data[i+2];
-                    const lum = (r+g+b)/3;
-                    
-                    // EDGE CALCULATION: Difference between this pixel and previous
+                    const lum = (data[i]+data[i+1]+data[i+2])/3;
                     const diff = Math.abs(lum - prevLum);
-                    
-                    // Only count strong edges (filters out noise/gradients)
                     if(diff > 30) {
                          rowEnergy[y] += diff;
                          colEnergy[x] += diff;
                     }
-                    
                     prevLum = lum;
                 }
             }
 
-            // PEAK FINDER
+            // 2. SMOOTHING (Gaussian Blur approx)
+            // This merges "double peaks" (like the two sides of O) into one center peak
+            function smoothArray(arr, radius) {
+                const res = new Array(arr.length).fill(0);
+                for(let i=0; i<arr.length; i++) {
+                    let sum = 0;
+                    let count = 0;
+                    for(let j=i-radius; j<=i+radius; j++) {
+                        if(j>=0 && j<arr.length) { sum+=arr[j]; count++; }
+                    }
+                    res[i] = sum/count;
+                }
+                return res;
+            }
+
+            // Smooth columns significantly to define the "Lane"
+            const smoothCols = smoothArray(colEnergy, Math.floor(w/40)); 
+            const smoothRows = smoothArray(rowEnergy, Math.floor(h/60));
+
+            // 3. Peak Finding (Standard)
             function getPeaks(arr) {
                 const max = Math.max(...arr);
-                const threshold = max * 0.15; // 15% of max edge energy
-                
+                const threshold = max * 0.2; 
                 let peaks = [];
                 let inPeak = false;
                 let startPeak = 0;
@@ -289,7 +295,6 @@
                         if(inPeak) {
                             inPeak = false;
                             const width = i - startPeak;
-                            // Width Filter: Columns are wider than Rows
                             if(width > 4) peaks.push(Math.floor(startPeak + width/2));
                         }
                     }
@@ -297,75 +302,122 @@
                 return peaks;
             }
 
-            let colPeaks = getPeaks(colEnergy);
+            let rawColPeaks = getPeaks(smoothCols);
 
-            // Refine Row Scan using found columns
-            const refinedRowEnergy = new Array(h).fill(0);
-            for(let y=0; y<h; y++) {
-                 // Scan vertical strip down each column center
-                 colPeaks.forEach(cx => {
-                      // Check 5 pixels around center
-                      for(let ox=-2; ox<=2; ox++) {
-                          const i = (y*w + (cx+ox))*4;
-                          // Simple brightness check is safer once we have columns locked
-                          const val = (data[i]+data[i+1]+data[i+2])/3;
-                          refinedRowEnergy[y] += val; 
-                      }
-                 });
-            }
-            // Use different peak logic for rows (finding bright spots now)
-            let rowPeaks = []; 
-            {
-                const arr = refinedRowEnergy;
-                const max = Math.max(...arr);
-                const threshold = max * 0.2;
-                let inPeak=false, start=0;
-                for(let i=0; i<arr.length; i++) {
-                    if(arr[i] > threshold) {
-                        if(!inPeak) { inPeak=true; start=i; }
-                    } else {
-                        if(inPeak) {
-                            inPeak=false;
-                            if((i-start)>5) rowPeaks.push(Math.floor(start+(i-start)/2));
-                        }
-                    }
-                }
-            }
-
-            log(`Peaks: ${rowPeaks.length}R x ${colPeaks.length}C`);
-
-            // --- FILTERING ---
-            if(colPeaks.length > 6) {
-                const center = Math.floor(colPeaks.length/2);
-                colPeaks = colPeaks.slice(center-3, center+3);
-            }
-
-            // Force 8 Rows (Take Bottom 8)
-            // But check for "Hint" text at bottom
-            if(rowPeaks.length > 8) {
-                // If the last gap is huge compared to average, drop it
-                const gaps = [];
-                for(let i=1; i<rowPeaks.length; i++) gaps.push(rowPeaks[i]-rowPeaks[i-1]);
-                const avgGap = gaps.reduce((a,b)=>a+b,0)/gaps.length;
+            // 4. GRID SNAP (The New Logic)
+            // We assume the grid is uniform. 
+            function snapToGrid(peaks, count, totalSize) {
+                if(peaks.length < 2) return null;
                 
-                if(gaps[gaps.length-1] > avgGap * 1.5) rowPeaks.pop(); // Drop Hint
-                if(rowPeaks.length > 8) rowPeaks = rowPeaks.slice(-8); // Take bottom 8
+                // Find Leftmost and Rightmost strong signal
+                const first = peaks[0];
+                const last = peaks[peaks.length-1];
+                
+                // Calculate idealized gap
+                // We know there are (count) items, so (count-1) gaps between first and last
+                // BUT, the peaks might be Col 2 and Col 5. We don't know which is which.
+                
+                // Safer approach: Median Gap
+                let gaps = [];
+                for(let i=1; i<peaks.length; i++) gaps.push(peaks[i] - peaks[i-1]);
+                gaps.sort((a,b) => a-b);
+                const medianGap = gaps[Math.floor(gaps.length/2)];
+                
+                // Filter peaks that align with the median gap
+                // Pick the strongest peak as "Anchor" (Usually center)
+                // For now, simpler: Just use median gap and center the grid on the screen
+                
+                // Actually, let's just assume the "First" and "Last" found peaks are the bounds of the grid
+                // This is risky if we missed the edge columns.
+                
+                // Hybrid: Use the median gap to generate the grid, centered on the average peak location
+                const avgPos = peaks.reduce((a,b)=>a+b,0) / peaks.length;
+                
+                // Reconstruct 6 columns centered around avgPos with spacing medianGap
+                // Wait, if we found 5 cols, avgPos is skewed. 
+                
+                // Let's stick to "Span Division" if it looks reasonable
+                const span = last - first;
+                // If we found roughly 6 columns, span / 5 should be the gap
+                // If we found 4 columns, span / 3...
+                
+                // Simplest robust method:
+                // 1. Estimate Cell Size = Width / 7 (roughly)
+                // 2. Find the peak closest to Center Screen. Lock that as an anchor.
+                // 3. Project lines out from there.
+                
+                const approxCell = totalSize / 7; // rough guess
+                let bestAnchor = peaks[0];
+                let minDist = Infinity;
+                const centerScreen = totalSize / 2;
+                
+                peaks.forEach(p => {
+                    const d = Math.abs(p - centerScreen);
+                    if(d < minDist) { minDist = d; bestAnchor = p; }
+                });
+                
+                // Is the anchor left or right of center?
+                // Strands has even columns (6). Center line is between col 2 and 3.
+                // So Anchor should be at -0.5, -1.5, or +0.5, +1.5 units from center.
+                
+                // Let's use the MEDIAN GAP from actual data
+                let validGap = medianGap;
+                // Sanity check: Gap should be between w/10 and w/4
+                if(validGap < totalSize/10 || validGap > totalSize/4) validGap = totalSize/6.5;
+
+                // Generate 6 lines. 
+                // We need to find "Start X".
+                // Try to match the generated lines to the existing peaks to find best fit offset.
+                let bestOffset = 0;
+                let maxMatches = 0;
+                
+                // Slide the grid to find best lock
+                for(let offset = first - validGap; offset <= first + validGap; offset += 5) {
+                    let matches = 0;
+                    for(let i=0; i<count; i++) {
+                        const target = offset + (i * validGap);
+                        // Check if any peak is near this target
+                        if(peaks.some(p => Math.abs(p - target) < validGap/3)) matches++;
+                    }
+                    if(matches > maxMatches) { maxMatches = matches; bestOffset = offset; }
+                }
+                
+                const result = [];
+                for(let i=0; i<count; i++) result.push(Math.floor(bestOffset + (i * validGap)));
+                return result;
             }
+            
+            // Generate Perfect Grids
+            const finalCols = snapToGrid(rawColPeaks, 6, w);
+            
+            // For rows, we do the same
+            let rawRowPeaks = getPeaks(smoothRows);
+            
+            // Filter "Hint" row (large gap at end)
+            if(rawRowPeaks.length > 2) {
+                const last = rawRowPeaks[rawRowPeaks.length-1];
+                const prev = rawRowPeaks[rawRowPeaks.length-2];
+                // If gap is 2x larger than normal, drop last
+                const gap = last - prev;
+                if(gap > (h/12)*1.5) rawRowPeaks.pop();
+            }
+            
+            const finalRows = snapToGrid(rawRowPeaks, 8, h);
+
+            if(!finalCols || !finalRows) {
+                log("Grid Scan Failed. Try cropping.");
+                return;
+            }
+
+            log(`Locked: ${finalRows.length}R x ${finalCols.length}C`);
 
             // --- VISUAL DEBUG ---
             ctx.strokeStyle = '#00ff00';
             ctx.lineWidth = 2;
-            rowPeaks.forEach(y => { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); });
-            colPeaks.forEach(x => { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); });
-
-            if(rowPeaks.length !== 8 || colPeaks.length !== 6) {
-                log(`Mismatch: ${rowPeaks.length}R x ${colPeaks.length}C. Check Lines.`);
-                return;
-            }
+            finalRows.forEach(y => { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); });
+            finalCols.forEach(x => { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); });
 
             // --- EXTRACT ---
-            log("Locked. Extracting...");
-            
             const stitchCanvas = document.createElement('canvas');
             stitchCanvas.width = 600;
             stitchCanvas.height = 800;
@@ -373,13 +425,15 @@
             sCtx.fillStyle = "white";
             sCtx.fillRect(0,0,600,800);
 
-            const colWidth = (colPeaks[5] - colPeaks[0]) / 5;
-            const cropSize = Math.floor(colWidth * 0.65);
+            // Calculate Grid Dimensions
+            const colWidth = finalCols[1] - finalCols[0];
+            const rowHeight = finalRows[1] - finalRows[0];
+            const cropSize = Math.floor(Math.min(colWidth, rowHeight) * 0.65);
 
             for(let r=0; r<8; r++) {
                 for(let c=0; c<6; c++) {
-                    const cx = colPeaks[c];
-                    const cy = rowPeaks[r];
+                    const cx = finalCols[c];
+                    const cy = finalRows[r];
                     
                     const cellCan = document.createElement('canvas');
                     cellCan.width = cropSize;
@@ -392,7 +446,6 @@
                     const d = cData.data;
                     for(let k=0; k<d.length; k+=4) {
                         const lum = (d[k]+d[k+1]+d[k+2])/3;
-                        // High contrast binarization
                         const val = lum > 90 ? 0 : 255; 
                         d[k]=d[k+1]=d[k+2]=val;
                     }
@@ -401,7 +454,6 @@
                 }
             }
 
-            // OCR
             const { data: { symbols } } = await tesseractWorker.recognize(stitchCanvas);
             
             initGrid();
