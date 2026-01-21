@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Strands Sandbox v23</title>
+    <title>Strands Sandbox v24</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <style>
         body {
@@ -21,10 +21,10 @@
         
         .version { 
             font-size: 0.9rem; 
-            color: #15803d; /* Green */
+            color: #7c3aed; /* Violet */
             font-weight: bold;
             margin-bottom: 15px; 
-            background: #dcfce7;
+            background: #ede9fe;
             padding: 2px 8px;
             border-radius: 4px;
         }
@@ -130,15 +130,15 @@
 <body>
 
     <h1>Strands Sandbox</h1>
-    <div class="version">v23.0 (Stitch Strategy)</div>
+    <div class="version">v24.0 (Smart Auto-Crop)</div>
     
     <div class="btn-group">
         <button class="primary" onclick="triggerPaste()">📋 Paste</button>
-        <button class="action" id="crop-btn" onclick="toggleCropMode()">Mode: Cropped</button>
+        <button class="action" id="crop-btn" onclick="toggleCropMode()">Mode: AUTO</button>
     </div>
 
     <div id="status">
-        Tap Paste.
+        Paste any screenshot (Full or Cropped).
     </div>
 
     <div id="grid-container"></div>
@@ -149,7 +149,7 @@
     </div>
     
     <div style="font-size:10px; color:#999; margin-top:20px">
-        Robot View (This is what is actually read):
+        Robot View (Stitched Sheet):
     </div>
     <canvas id="proc-canvas"></canvas>
 
@@ -161,7 +161,7 @@
         const ctx = canvas.getContext('2d');
 
         let lastBitmap = null;
-        let isFullScreenshot = false; 
+        let forceManualCrop = false; 
 
         function initGrid() {
             gridContainer.innerHTML = '';
@@ -221,8 +221,8 @@
         });
 
         function toggleCropMode() {
-            isFullScreenshot = !isFullScreenshot;
-            cropBtn.innerText = isFullScreenshot ? "Mode: Full Screen" : "Mode: Cropped";
+            forceManualCrop = !forceManualCrop;
+            cropBtn.innerText = forceManualCrop ? "Mode: MANUAL" : "Mode: AUTO";
             if(lastBitmap) runProcessing();
         }
 
@@ -244,27 +244,74 @@
             const imgData = tCtx.getImageData(0, 0, w, h);
             const data = imgData.data;
 
-            // --- CROP LOGIC ---
-            let startYScan = 0;
-            if(isFullScreenshot) startYScan = Math.floor(h * 0.4);
+            // --- V24 SKYSCRAPER LOGIC ---
+            let minX=0, maxX=w, minY=0, maxY=h;
 
-            let minX=w, maxX=0, minY=h, maxY=0;
-            for(let y=startYScan; y<h; y+=10) { 
-                for(let x=0; x<w; x+=10) {
-                    const i = (y*w + x)*4;
-                    const lum = (data[i]+data[i+1]+data[i+2])/3;
-                    if(lum > 50) { 
-                        if(x < minX) minX = x;
-                        if(x > maxX) maxX = x;
-                        if(y < minY) minY = y;
-                        if(y > maxY) maxY = y;
+            if (!forceManualCrop) {
+                // 1. Vertical Projection: Find the "Tallest" continuous block of activity
+                // "Activity" = Row contains bright pixels
+                
+                let activeRuns = [];
+                let currentRun = null;
+
+                for(let y=0; y<h; y+=5) { // Scan every 5th row
+                    let rowHasBright = false;
+                    for(let x=0; x<w; x+=10) {
+                        const i = (y*w + x)*4;
+                        if ((data[i]+data[i+1]+data[i+2])/3 > 50) {
+                            rowHasBright = true;
+                            break;
+                        }
+                    }
+
+                    if(rowHasBright) {
+                        if(!currentRun) currentRun = { start: y, end: y };
+                        else currentRun.end = y;
+                    } else {
+                        if(currentRun) {
+                            // If run is significant (> 100px height), save it
+                            if((currentRun.end - currentRun.start) > 100) {
+                                activeRuns.push(currentRun);
+                            }
+                            currentRun = null;
+                        }
                     }
                 }
-            }
-            minX = Math.max(0, minX - 10);
-            minY = Math.max(0, minY - 10);
-            maxX = Math.min(w, maxX + 10);
-            maxY = Math.min(h, maxY + 10);
+                if(currentRun && (currentRun.end - currentRun.start) > 100) activeRuns.push(currentRun);
+
+                // Find the TALLEST run (The Grid)
+                // Ignore Short runs (Headers, Menus)
+                let bestRun = null;
+                let maxLen = 0;
+                activeRuns.forEach(run => {
+                    const len = run.end - run.start;
+                    if(len > maxLen) {
+                        maxLen = len;
+                        bestRun = run;
+                    }
+                });
+
+                if(bestRun) {
+                    minY = bestRun.start;
+                    maxY = bestRun.end;
+                    
+                    // 2. Now find Width (X) within that Y range
+                    let realMinX = w, realMaxX = 0;
+                    for(let y=minY; y<maxY; y+=10) {
+                         for(let x=0; x<w; x+=10) {
+                             const i = (y*w + x)*4;
+                             if ((data[i]+data[i+1]+data[i+2])/3 > 50) {
+                                 if(x < realMinX) realMinX = x;
+                                 if(x > realMaxX) realMaxX = x;
+                             }
+                         }
+                    }
+                    minX = Math.max(0, realMinX - 10);
+                    maxX = Math.min(w, realMaxX + 10);
+                }
+            } 
+
+            // Fallback validation
             if (maxX <= minX || maxY <= minY) { minX = 0; maxX = w; minY = 0; maxY = h; }
 
             const gridW = maxX - minX;
@@ -278,9 +325,8 @@
             ctx.fillStyle = "white"; 
             ctx.fillRect(0,0,600,800);
 
-            statusDiv.innerHTML = "Creating Master Sheet...";
+            statusDiv.innerHTML = "Stitching Sheet...";
             
-            // Loop through all cells and draw them to the ONE master canvas
             for(let r=0; r<8; r++) {
                 for(let c=0; c<6; c++) {
                     const srcX = minX + (c * cellW);
@@ -337,18 +383,17 @@
                     }
                     rawCtx.putImageData(rawData, 0, 0);
 
-                    // Draw to Master Stitched Canvas (100px slots)
-                    // We center the cell in the 100x100 slot
+                    // Draw to Master
                     ctx.drawImage(rawCanvas, c*100 + 10, r*100 + 10, 80, 80);
                 }
             }
 
-            // OCR THE WHOLE SHEET
+            // OCR
             statusDiv.innerHTML = "Reading Sheet...";
             const worker = await Tesseract.createWorker('eng');
             await worker.setParameters({
                 tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
-                tessedit_pageseg_mode: '6' // Assume a single uniform block of text
+                tessedit_pageseg_mode: '6' 
             });
 
             const { data: { symbols } } = await worker.recognize(canvas);
@@ -357,19 +402,14 @@
             const finalGrid = Array(8).fill(null).map(() => Array(6).fill(''));
             let foundCount = 0;
 
-            // Map symbols back to grid
             symbols.forEach(s => {
-                // Find center of the symbol
                 const cx = (s.bbox.x0 + s.bbox.x1) / 2;
                 const cy = (s.bbox.y0 + s.bbox.y1) / 2;
-
-                // Simple math: We drew them in 100x100 boxes
                 const c = Math.floor(cx / 100);
                 const r = Math.floor(cy / 100);
 
                 let char = s.text.trim().toUpperCase();
                 
-                // Fixes
                 if(char === '0') char = 'O';
                 if(char === '|') char = 'I';
                 if(char === '1') char = 'I';
@@ -382,7 +422,6 @@
                 }
             });
 
-            // Render
             for (let r = 0; r < 8; r++) {
                 for (let c = 0; c < 6; c++) {
                     const char = finalGrid[r][c] || '';
