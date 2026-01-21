@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Strands Sandbox v31.5</title>
+    <title>Strands Sandbox v32.0</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.3/dist/tesseract.min.js"></script>
     <style>
         body {
@@ -21,10 +21,10 @@
         
         .version { 
             font-size: 0.9rem; 
-            color: #facc15; /* Yellow for v31.5 */
+            color: #ef4444; /* Red for v32 (Edge) */
             font-weight: bold;
             margin-bottom: 15px; 
-            background: rgba(250, 204, 21, 0.15);
+            background: rgba(239, 68, 68, 0.15);
             padding: 2px 8px;
             border-radius: 4px;
         }
@@ -119,7 +119,7 @@
 <body>
 
     <h1>Strands Sandbox</h1>
-    <div class="version">v31.5 (Safe Zone Scan)</div>
+    <div class="version">v32.0 (Edge Scanner)</div>
     
     <div class="btn-group">
         <button id="loadBtn" class="primary" onclick="initOCR()">Load Engine</button>
@@ -223,10 +223,10 @@
         async function processImage(blob) {
             statusDiv.textContent = "> Processing...";
             const bitmap = await createImageBitmap(blob);
-            runSafeScan(bitmap);
+            runEdgeScan(bitmap);
         }
 
-        async function runSafeScan(bitmap) {
+        async function runEdgeScan(bitmap) {
             const w = bitmap.width;
             const h = bitmap.height;
             
@@ -238,38 +238,45 @@
 
             log(`Size: ${w}x${h}`);
 
-            // --- V31.5: "SAFE ZONE" SCAN ---
-            // We only look at the middle of the screen to find the grid structure
-            // This ignores Headers, Footers, and Status Bars.
+            // --- V32.0: EDGE DETECTION SCAN ---
+            // Instead of measuring brightness, we measure CONTRAST.
+            // This ignores solid white bars (Header) and sees only text (Grid).
             
             const rowEnergy = new Array(h).fill(0);
             const colEnergy = new Array(w).fill(0);
             
-            // Safe Zone: 25% to 75% height
-            const safeY_Start = Math.floor(h * 0.25);
-            const safeY_End = Math.floor(h * 0.75);
-            
-            // Safe Zone: 5% to 95% width
-            const safeX_Start = Math.floor(w * 0.05);
-            const safeX_End = Math.floor(w * 0.95);
+            // Safe Zone (Middle Screen)
+            const startY = Math.floor(h * 0.2);
+            const endY = Math.floor(h * 0.8);
+            const startX = Math.floor(w * 0.05);
+            const endX = Math.floor(w * 0.95);
 
-            for(let y=safeY_Start; y<safeY_End; y++) {
-                for(let x=safeX_Start; x<safeX_End; x++) {
+            for(let y=startY; y<endY; y++) {
+                // Pre-calculate previous pixel for edge check
+                let prevLum = 0; 
+                
+                for(let x=startX; x<endX; x++) {
                     const i = (y*w + x)*4;
                     const r=data[i], g=data[i+1], b=data[i+2];
                     const lum = (r+g+b)/3;
                     
-                    // Accumulate Energy
-                    rowEnergy[y] += lum;
-                    colEnergy[x] += lum;
+                    // EDGE CALCULATION: Difference between this pixel and previous
+                    const diff = Math.abs(lum - prevLum);
+                    
+                    // Only count strong edges (filters out noise/gradients)
+                    if(diff > 30) {
+                         rowEnergy[y] += diff;
+                         colEnergy[x] += diff;
+                    }
+                    
+                    prevLum = lum;
                 }
             }
 
             // PEAK FINDER
-            function getPeaks(arr, count) {
+            function getPeaks(arr) {
                 const max = Math.max(...arr);
-                // Lower threshold to 10% to catch thin letters
-                const threshold = max * 0.10; 
+                const threshold = max * 0.15; // 15% of max edge energy
                 
                 let peaks = [];
                 let inPeak = false;
@@ -282,7 +289,8 @@
                         if(inPeak) {
                             inPeak = false;
                             const width = i - startPeak;
-                            if(width > 5) peaks.push(Math.floor(startPeak + width/2));
+                            // Width Filter: Columns are wider than Rows
+                            if(width > 4) peaks.push(Math.floor(startPeak + width/2));
                         }
                     }
                 }
@@ -291,42 +299,57 @@
 
             let colPeaks = getPeaks(colEnergy);
 
-            // Row Scan: We need to scan a wider Y area to catch top/bottom rows
-            // But we use the COLUMNS we just found to filter the noise
+            // Refine Row Scan using found columns
             const refinedRowEnergy = new Array(h).fill(0);
             for(let y=0; y<h; y++) {
-                // Only sum pixels that align with our found columns!
-                colPeaks.forEach(cx => {
-                    const i = (y*w + cx)*4;
-                    const lum = (data[i]+data[i+1]+data[i+2])/3;
-                    refinedRowEnergy[y] += lum;
-                });
+                 // Scan vertical strip down each column center
+                 colPeaks.forEach(cx => {
+                      // Check 5 pixels around center
+                      for(let ox=-2; ox<=2; ox++) {
+                          const i = (y*w + (cx+ox))*4;
+                          // Simple brightness check is safer once we have columns locked
+                          const val = (data[i]+data[i+1]+data[i+2])/3;
+                          refinedRowEnergy[y] += val; 
+                      }
+                 });
             }
-            let rowPeaks = getPeaks(refinedRowEnergy);
+            // Use different peak logic for rows (finding bright spots now)
+            let rowPeaks = []; 
+            {
+                const arr = refinedRowEnergy;
+                const max = Math.max(...arr);
+                const threshold = max * 0.2;
+                let inPeak=false, start=0;
+                for(let i=0; i<arr.length; i++) {
+                    if(arr[i] > threshold) {
+                        if(!inPeak) { inPeak=true; start=i; }
+                    } else {
+                        if(inPeak) {
+                            inPeak=false;
+                            if((i-start)>5) rowPeaks.push(Math.floor(start+(i-start)/2));
+                        }
+                    }
+                }
+            }
 
             log(`Peaks: ${rowPeaks.length}R x ${colPeaks.length}C`);
 
             // --- FILTERING ---
-            // Force 6 Cols (Take Center 6)
             if(colPeaks.length > 6) {
                 const center = Math.floor(colPeaks.length/2);
                 colPeaks = colPeaks.slice(center-3, center+3);
             }
 
-            // Force 8 Rows (Take Bottom 8, assuming header noise)
-            // But check spacing! If the last row is too far, it's the "Hint" text.
+            // Force 8 Rows (Take Bottom 8)
+            // But check for "Hint" text at bottom
             if(rowPeaks.length > 8) {
-                // Heuristic: The gap between Row 7 and Row 8 should be similar to Row 6 and 7.
-                // If Row[last] - Row[last-1] is > 1.5x average gap, drop it.
-                const lastGap = rowPeaks[rowPeaks.length-1] - rowPeaks[rowPeaks.length-2];
-                const prevGap = rowPeaks[rowPeaks.length-2] - rowPeaks[rowPeaks.length-3];
+                // If the last gap is huge compared to average, drop it
+                const gaps = [];
+                for(let i=1; i<rowPeaks.length; i++) gaps.push(rowPeaks[i]-rowPeaks[i-1]);
+                const avgGap = gaps.reduce((a,b)=>a+b,0)/gaps.length;
                 
-                if(lastGap > (prevGap * 1.5)) {
-                    // Last peak is likely "Hint" button text
-                    rowPeaks.pop(); 
-                }
-                // Now take bottom 8 of what remains
-                if(rowPeaks.length > 8) rowPeaks = rowPeaks.slice(-8);
+                if(gaps[gaps.length-1] > avgGap * 1.5) rowPeaks.pop(); // Drop Hint
+                if(rowPeaks.length > 8) rowPeaks = rowPeaks.slice(-8); // Take bottom 8
             }
 
             // --- VISUAL DEBUG ---
@@ -336,7 +359,7 @@
             colPeaks.forEach(x => { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); });
 
             if(rowPeaks.length !== 8 || colPeaks.length !== 6) {
-                log(`Mismatch: ${rowPeaks.length}R x ${colPeaks.length}C. Check Green Lines.`);
+                log(`Mismatch: ${rowPeaks.length}R x ${colPeaks.length}C. Check Lines.`);
                 return;
             }
 
@@ -369,424 +392,8 @@
                     const d = cData.data;
                     for(let k=0; k<d.length; k+=4) {
                         const lum = (d[k]+d[k+1]+d[k+2])/3;
-                        const val = lum > 80 ? 0 : 255; 
-                        d[k]=d[k+1]=d[k+2]=val;
-                    }
-                    cCtx.putImageData(cData, 0, 0);
-                    sCtx.drawImage(cellCan, c*100 + 20, r*100 + 20, 60, 60);
-                }
-            }
-
-            // OCR
-            const { data: { symbols } } = await tesseractWorker.recognize(stitchCanvas);
-            
-            initGrid();
-            const finalGrid = Array(8).fill(null).map(() => Array(6).fill(''));
-            let count = 0;
-
-            symbols.forEach(s => {
-                const bx = (s.bbox.x0 + s.bbox.x1)/2;
-                const by = (s.bbox.y0 + s.bbox.y1)/2;
-                const c = Math.floor(bx / 100);
-                const r = Math.floor(by / 100);
-                
-                let char = s.text.trim().toUpperCase();
-                if(char==='0') char='O';
-                if(char==='|' || char==='1' || char==='l') char='I';
-                if(char==='5') char='S';
-                if(char==='8') char='B';
-                
-                if(c>=0 && c<6 && r>=0 && r<8 && char.match(/[A-Z]/)) {
-                    finalGrid[r][c] = char;
-                    count++;
-                }
-            });
-
-            const cells = gridContainer.children;
-            for(let r=0; r<8; r++) {
-                for(let c=0; c<6; c++) {
-                    const ch = finalGrid[r][c];
-                    if(ch) cells[r*6+c].innerText = ch;
-                }
-            }
-            log(`Success! ${count}/48 letters.`);
-        }
-
-        initGrid();
-    </script>
-</body>
-</html><!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Strands Sandbox v31.5</title>
-    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.3/dist/tesseract.min.js"></script>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background-color: #18181b; 
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            padding: 20px 10px;
-            color: #f4f4f5;
-            overscroll-behavior: none; 
-        }
-
-        h1 { margin: 0; font-size: 1.4rem; color: #fff; }
-        
-        .version { 
-            font-size: 0.9rem; 
-            color: #facc15; /* Yellow for v31.5 */
-            font-weight: bold;
-            margin-bottom: 15px; 
-            background: rgba(250, 204, 21, 0.15);
-            padding: 2px 8px;
-            border-radius: 4px;
-        }
-
-        #status {
-            background: #27272a;
-            padding: 12px;
-            border-radius: 12px;
-            margin-bottom: 15px;
-            text-align: left;
-            font-family: monospace;
-            font-size: 12px;
-            width: 90%;
-            max-width: 400px;
-            border: 1px solid #3f3f46;
-            color: #22c55e;
-            min-height: 20px;
-            white-space: pre-wrap;
-        }
-
-        #grid-container {
-            display: grid;
-            grid-template-columns: repeat(6, 1fr);
-            gap: 6px;
-            padding: 12px;
-            background: #27272a;
-            border-radius: 16px;
-            width: 100%;
-            max-width: 360px;
-        }
-
-        .cell {
-            aspect-ratio: 1/1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 20px; 
-            font-weight: 700;
-            border: 2px solid #3f3f46;
-            border-radius: 50%;
-            cursor: pointer;
-            text-transform: uppercase;
-            user-select: none;
-            background: #18181b;
-            color: #fff;
-        }
-
-        .cell.selected { background-color: #3b82f6; border-color: #60a5fa; color: white; }
-
-        .btn-group {
-            display: flex;
-            gap: 10px;
-            width: 90%;
-            max-width: 360px;
-            margin-bottom: 10px;
-        }
-
-        button.primary {
-            background-color: #fff;
-            color: #000;
-            font-size: 16px;
-            padding: 12px;
-            border-radius: 12px;
-            border: none;
-            flex: 1;
-            font-weight: bold;
-        }
-        button.primary:disabled { opacity: 0.5; background: #555; color: #aaa; }
-
-        .controls { margin-top: 20px; display: flex; gap: 10px; }
-        button.secondary {
-            padding: 10px 16px;
-            background-color: transparent;
-            border: 1px solid #52525b;
-            border-radius: 8px;
-            font-size: 13px;
-            color: #a1a1aa;
-        }
-
-        #proc-canvas { 
-            display: block; 
-            margin-top: 15px; 
-            border: 1px solid #333; 
-            width: 250px; 
-            height: auto;
-            border-radius: 8px;
-            background: #000; 
-        }
-        .debug-label { font-size: 10px; color: #666; margin-top: 5px; }
-    </style>
-</head>
-<body>
-
-    <h1>Strands Sandbox</h1>
-    <div class="version">v31.5 (Safe Zone Scan)</div>
-    
-    <div class="btn-group">
-        <button id="loadBtn" class="primary" onclick="initOCR()">Load Engine</button>
-        <button id="pasteBtn" class="primary" onclick="triggerPaste()" disabled>Paste Image</button>
-    </div>
-
-    <div id="status">Click 'Load Engine' to start...</div>
-
-    <div id="grid-container"></div>
-
-    <div class="controls">
-        <button class="secondary" onclick="clearHighlights()">Clear Path</button>
-        <button class="secondary" onclick="initGrid()">Reset Board</button>
-    </div>
-    
-    <div class="debug-label">ROBOT VIEW (DEBUG LINES)</div>
-    <canvas id="proc-canvas"></canvas>
-
-    <script>
-        const gridContainer = document.getElementById('grid-container');
-        const statusDiv = document.getElementById('status');
-        const pasteBtn = document.getElementById('pasteBtn');
-        const loadBtn = document.getElementById('loadBtn');
-        const canvas = document.getElementById('proc-canvas');
-        const ctx = canvas.getContext('2d');
-
-        let tesseractWorker = null;
-        let isEngineReady = false;
-
-        function log(msg) {
-            statusDiv.textContent += "\n> " + msg;
-            statusDiv.scrollTop = statusDiv.scrollHeight;
-        }
-
-        async function initOCR() {
-            loadBtn.disabled = true;
-            statusDiv.textContent = "> Initializing...";
-            
-            try {
-                tesseractWorker = await Tesseract.createWorker('eng');
-                await tesseractWorker.setParameters({
-                    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
-                    tessedit_pageseg_mode: '6' 
-                });
-                isEngineReady = true;
-                log("Engine Ready.");
-                loadBtn.style.display = 'none';
-                pasteBtn.disabled = false;
-            } catch (e) {
-                console.error(e);
-                log("Load Failed.");
-                loadBtn.disabled = false;
-            }
-        }
-
-        function initGrid() {
-            gridContainer.innerHTML = '';
-            for (let r = 0; r < 8; r++) {
-                for (let c = 0; c < 6; c++) {
-                    createCell('', r, c);
-                }
-            }
-        }
-
-        function createCell(char, r, c) {
-            const cell = document.createElement('div');
-            cell.className = 'cell';
-            cell.innerText = char;
-            cell.onclick = () => cell.classList.toggle('selected');
-            gridContainer.appendChild(cell);
-        }
-
-        async function triggerPaste() {
-            if(!isEngineReady) return;
-            try {
-                const items = await navigator.clipboard.read();
-                for (const item of items) {
-                    if (item.types.some(t => t.startsWith('image/'))) {
-                        const blob = await item.getType(item.types.find(t => t.startsWith('image/')));
-                        processImage(blob);
-                        return;
-                    }
-                }
-                alert("No image on clipboard!");
-            } catch (err) {
-                log("Clipboard blocked. Tap 'Allow Paste'.");
-            }
-        }
-        
-        document.addEventListener('paste', (e) => {
-            if(!isEngineReady) return;
-            const items = (e.clipboardData || e.originalEvent.clipboardData).items;
-            for (const item of items) {
-                if (item.type.indexOf('image') !== -1) {
-                    processImage(item.getAsFile());
-                    return;
-                }
-            }
-        });
-
-        async function processImage(blob) {
-            statusDiv.textContent = "> Processing...";
-            const bitmap = await createImageBitmap(blob);
-            runSafeScan(bitmap);
-        }
-
-        async function runSafeScan(bitmap) {
-            const w = bitmap.width;
-            const h = bitmap.height;
-            
-            canvas.width = w;
-            canvas.height = h;
-            ctx.drawImage(bitmap, 0, 0);
-            const imgData = ctx.getImageData(0, 0, w, h);
-            const data = imgData.data;
-
-            log(`Size: ${w}x${h}`);
-
-            // --- V31.5: "SAFE ZONE" SCAN ---
-            // We only look at the middle of the screen to find the grid structure
-            // This ignores Headers, Footers, and Status Bars.
-            
-            const rowEnergy = new Array(h).fill(0);
-            const colEnergy = new Array(w).fill(0);
-            
-            // Safe Zone: 25% to 75% height
-            const safeY_Start = Math.floor(h * 0.25);
-            const safeY_End = Math.floor(h * 0.75);
-            
-            // Safe Zone: 5% to 95% width
-            const safeX_Start = Math.floor(w * 0.05);
-            const safeX_End = Math.floor(w * 0.95);
-
-            for(let y=safeY_Start; y<safeY_End; y++) {
-                for(let x=safeX_Start; x<safeX_End; x++) {
-                    const i = (y*w + x)*4;
-                    const r=data[i], g=data[i+1], b=data[i+2];
-                    const lum = (r+g+b)/3;
-                    
-                    // Accumulate Energy
-                    rowEnergy[y] += lum;
-                    colEnergy[x] += lum;
-                }
-            }
-
-            // PEAK FINDER
-            function getPeaks(arr, count) {
-                const max = Math.max(...arr);
-                // Lower threshold to 10% to catch thin letters
-                const threshold = max * 0.10; 
-                
-                let peaks = [];
-                let inPeak = false;
-                let startPeak = 0;
-
-                for(let i=0; i<arr.length; i++) {
-                    if(arr[i] > threshold) {
-                        if(!inPeak) { inPeak=true; startPeak=i; }
-                    } else {
-                        if(inPeak) {
-                            inPeak = false;
-                            const width = i - startPeak;
-                            if(width > 5) peaks.push(Math.floor(startPeak + width/2));
-                        }
-                    }
-                }
-                return peaks;
-            }
-
-            let colPeaks = getPeaks(colEnergy);
-
-            // Row Scan: We need to scan a wider Y area to catch top/bottom rows
-            // But we use the COLUMNS we just found to filter the noise
-            const refinedRowEnergy = new Array(h).fill(0);
-            for(let y=0; y<h; y++) {
-                // Only sum pixels that align with our found columns!
-                colPeaks.forEach(cx => {
-                    const i = (y*w + cx)*4;
-                    const lum = (data[i]+data[i+1]+data[i+2])/3;
-                    refinedRowEnergy[y] += lum;
-                });
-            }
-            let rowPeaks = getPeaks(refinedRowEnergy);
-
-            log(`Peaks: ${rowPeaks.length}R x ${colPeaks.length}C`);
-
-            // --- FILTERING ---
-            // Force 6 Cols (Take Center 6)
-            if(colPeaks.length > 6) {
-                const center = Math.floor(colPeaks.length/2);
-                colPeaks = colPeaks.slice(center-3, center+3);
-            }
-
-            // Force 8 Rows (Take Bottom 8, assuming header noise)
-            // But check spacing! If the last row is too far, it's the "Hint" text.
-            if(rowPeaks.length > 8) {
-                // Heuristic: The gap between Row 7 and Row 8 should be similar to Row 6 and 7.
-                // If Row[last] - Row[last-1] is > 1.5x average gap, drop it.
-                const lastGap = rowPeaks[rowPeaks.length-1] - rowPeaks[rowPeaks.length-2];
-                const prevGap = rowPeaks[rowPeaks.length-2] - rowPeaks[rowPeaks.length-3];
-                
-                if(lastGap > (prevGap * 1.5)) {
-                    // Last peak is likely "Hint" button text
-                    rowPeaks.pop(); 
-                }
-                // Now take bottom 8 of what remains
-                if(rowPeaks.length > 8) rowPeaks = rowPeaks.slice(-8);
-            }
-
-            // --- VISUAL DEBUG ---
-            ctx.strokeStyle = '#00ff00';
-            ctx.lineWidth = 2;
-            rowPeaks.forEach(y => { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); });
-            colPeaks.forEach(x => { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); });
-
-            if(rowPeaks.length !== 8 || colPeaks.length !== 6) {
-                log(`Mismatch: ${rowPeaks.length}R x ${colPeaks.length}C. Check Green Lines.`);
-                return;
-            }
-
-            // --- EXTRACT ---
-            log("Locked. Extracting...");
-            
-            const stitchCanvas = document.createElement('canvas');
-            stitchCanvas.width = 600;
-            stitchCanvas.height = 800;
-            const sCtx = stitchCanvas.getContext('2d');
-            sCtx.fillStyle = "white";
-            sCtx.fillRect(0,0,600,800);
-
-            const colWidth = (colPeaks[5] - colPeaks[0]) / 5;
-            const cropSize = Math.floor(colWidth * 0.65);
-
-            for(let r=0; r<8; r++) {
-                for(let c=0; c<6; c++) {
-                    const cx = colPeaks[c];
-                    const cy = rowPeaks[r];
-                    
-                    const cellCan = document.createElement('canvas');
-                    cellCan.width = cropSize;
-                    cellCan.height = cropSize;
-                    const cCtx = cellCan.getContext('2d');
-                    
-                    cCtx.drawImage(bitmap, cx-(cropSize/2), cy-(cropSize/2), cropSize, cropSize, 0, 0, cropSize, cropSize);
-                    
-                    const cData = cCtx.getImageData(0,0,cropSize,cropSize);
-                    const d = cData.data;
-                    for(let k=0; k<d.length; k+=4) {
-                        const lum = (d[k]+d[k+1]+d[k+2])/3;
-                        const val = lum > 80 ? 0 : 255; 
+                        // High contrast binarization
+                        const val = lum > 90 ? 0 : 255; 
                         d[k]=d[k+1]=d[k+2]=val;
                     }
                     cCtx.putImageData(cData, 0, 0);
