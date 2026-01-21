@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Strands Sandbox v26</title>
+    <title>Strands Sandbox v27</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <style>
         body {
@@ -21,10 +21,10 @@
         
         .version { 
             font-size: 0.9rem; 
-            color: #000; 
+            color: #fff; 
             font-weight: bold;
             margin-bottom: 15px; 
-            background: #e5e5e5;
+            background: #000;
             padding: 2px 8px;
             border-radius: 4px;
         }
@@ -130,7 +130,7 @@
 <body>
 
     <h1>Strands Sandbox</h1>
-    <div class="version">v26.0 (Paper Mode)</div>
+    <div class="version">v27.0 (Global Consensus)</div>
     
     <div class="btn-group">
         <button class="primary" onclick="triggerPaste()">📋 Paste</button>
@@ -149,7 +149,7 @@
     </div>
     
     <div style="font-size:10px; color:#999; margin-top:20px">
-        Robot View (MUST be Black Text on White BG):
+        Robot View (Uniform Black on White):
     </div>
     <canvas id="proc-canvas"></canvas>
 
@@ -305,12 +305,36 @@
             const cellW = gridW / 6;
             const cellH = gridH / 8;
 
+            // --- V27: GLOBAL CONSENSUS ---
+            // Before we chop it up, let's judge the WHOLE cropped area.
+            // Count dark vs light pixels in the cropped region.
+            let darkPixels = 0;
+            let totalPixels = 0;
+            
+            // Sample the crop area
+            const cropCanvas = document.createElement('canvas');
+            cropCanvas.width = gridW;
+            cropCanvas.height = gridH;
+            const cropCtx = cropCanvas.getContext('2d');
+            cropCtx.drawImage(lastBitmap, minX, minY, gridW, gridH, 0, 0, gridW, gridH);
+            const cropData = cropCtx.getImageData(0,0,gridW,gridH).data;
+
+            for(let i=0; i<cropData.length; i+=4) {
+                const lum = (cropData[i]+cropData[i+1]+cropData[i+2])/3;
+                if(lum < 100) darkPixels++;
+                totalPixels++;
+            }
+            
+            // If > 50% of the puzzle is dark, it's Unsolved.
+            const isUnsolvedMode = (darkPixels / totalPixels) > 0.5;
+
+            // Setup Stitched Canvas
             canvas.width = 600; 
             canvas.height = 800;
             ctx.fillStyle = "white"; 
             ctx.fillRect(0,0,600,800);
 
-            statusDiv.innerHTML = "Applying Paper Mode...";
+            statusDiv.innerHTML = isUnsolvedMode ? "Inverting Dark Mode..." : "Processing Light Mode...";
             
             for(let r=0; r<8; r++) {
                 for(let c=0; c<6; c++) {
@@ -326,26 +350,15 @@
                     
                     rawCtx.drawImage(lastBitmap, srcX + padX, srcY + padY, cellW - (padX*2), cellH - (padY*2), 0, 0, cellW, cellH);
 
-                    // --- V26 UNIVERSAL PAPER MODE ---
+                    // --- PIXEL PROCESSING ---
                     const rawData = rawCtx.getImageData(0,0,cellW,cellH);
                     const rd = rawData.data;
-                    
-                    // 1. Determine Polarity (Is this Dark or Light cell?)
-                    // Sample center pixel to decide
-                    const cx = Math.floor(cellW/2);
-                    const cy = Math.floor(cellH/2);
-                    const ci = (cy*cellW + cx)*4;
-                    const centerLum = (rd[ci]+rd[ci+1]+rd[ci+2])/3;
-                    
-                    // If center is Dark (<100), it's Unsolved (White Text on Black). We must INVERT.
-                    // If center is Light (>100), it's Solved (Black Text on White/Color). We KEEP.
-                    const needsInvert = centerLum < 100;
 
-                    // 2. Normalize every pixel
                     for(let i=0; i<rd.length; i+=4) {
                         let r = rd[i], g = rd[i+1], b = rd[i+2];
                         
-                        if (needsInvert) {
+                        // Apply GLOBAL Invert Decision
+                        if (isUnsolvedMode) {
                             r = 255 - r;
                             g = 255 - g;
                             b = 255 - b;
@@ -358,7 +371,7 @@
                         rd[i] = rd[i+1] = rd[i+2] = val;
                     }
                     
-                    // 3. Bold (Dilation)
+                    // Bold (Dilation)
                     const w = cellW;
                     const copy = new Uint8ClampedArray(rd);
                     for(let i=0; i<rd.length; i+=4) {
