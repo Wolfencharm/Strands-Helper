@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Strands Sandbox v27</title>
+    <title>Strands Sandbox v28</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <style>
         body {
@@ -21,10 +21,10 @@
         
         .version { 
             font-size: 0.9rem; 
-            color: #fff; 
+            color: #ffffff; 
             font-weight: bold;
             margin-bottom: 15px; 
-            background: #000;
+            background: #4f46e5; /* Indigo */
             padding: 2px 8px;
             border-radius: 4px;
         }
@@ -130,7 +130,7 @@
 <body>
 
     <h1>Strands Sandbox</h1>
-    <div class="version">v27.0 (Global Consensus)</div>
+    <div class="version">v28.0 (Hybrid Engine)</div>
     
     <div class="btn-group">
         <button class="primary" onclick="triggerPaste()">📋 Paste</button>
@@ -138,7 +138,7 @@
     </div>
 
     <div id="status">
-        Paste any screenshot.
+        Paste a FULL screenshot.
     </div>
 
     <div id="grid-container"></div>
@@ -149,7 +149,7 @@
     </div>
     
     <div style="font-size:10px; color:#999; margin-top:20px">
-        Robot View (Uniform Black on White):
+        Robot View (Stitched & Normalized):
     </div>
     <canvas id="proc-canvas"></canvas>
 
@@ -223,6 +223,7 @@
         function toggleCropMode() {
             forceManualCrop = !forceManualCrop;
             cropBtn.innerText = forceManualCrop ? "Mode: MANUAL" : "Mode: AUTO";
+            statusDiv.innerHTML = forceManualCrop ? "Use Cropped Image." : "Use Full Screenshot.";
             if(lastBitmap) runProcessing();
         }
 
@@ -244,18 +245,21 @@
             const imgData = tCtx.getImageData(0, 0, w, h);
             const data = imgData.data;
 
-            // --- SKYSCRAPER CROP LOGIC ---
+            // --- 1. SKYSCRAPER AUTO-CROP ---
             let minX=0, maxX=w, minY=0, maxY=h;
 
             if (!forceManualCrop) {
+                statusDiv.innerHTML = "Auto-detecting grid...";
                 let activeRuns = [];
                 let currentRun = null;
 
+                // Scan for brightness activity
                 for(let y=0; y<h; y+=5) { 
                     let rowHasBright = false;
                     for(let x=0; x<w; x+=10) {
                         const i = (y*w + x)*4;
-                        if ((data[i]+data[i+1]+data[i+2])/3 > 50) {
+                        // Look for bright pixels (letters or circles)
+                        if ((data[i]+data[i+1]+data[i+2])/3 > 60) {
                             rowHasBright = true;
                             break;
                         }
@@ -266,13 +270,15 @@
                         else currentRun.end = y;
                     } else {
                         if(currentRun) {
-                            if((currentRun.end - currentRun.start) > 100) activeRuns.push(currentRun);
+                            // Must be tall enough to be the grid (>15% of image height)
+                            if((currentRun.end - currentRun.start) > (h * 0.15)) activeRuns.push(currentRun);
                             currentRun = null;
                         }
                     }
                 }
-                if(currentRun && (currentRun.end - currentRun.start) > 100) activeRuns.push(currentRun);
+                if(currentRun && (currentRun.end - currentRun.start) > (h * 0.15)) activeRuns.push(currentRun);
 
+                // Find tallest run
                 let bestRun = null;
                 let maxLen = 0;
                 activeRuns.forEach(run => {
@@ -283,35 +289,40 @@
                 if(bestRun) {
                     minY = bestRun.start;
                     maxY = bestRun.end;
+                    // Find width within this height bound
                     let realMinX = w, realMaxX = 0;
                     for(let y=minY; y<maxY; y+=10) {
                          for(let x=0; x<w; x+=10) {
                              const i = (y*w + x)*4;
-                             if ((data[i]+data[i+1]+data[i+2])/3 > 50) {
+                             if ((data[i]+data[i+1]+data[i+2])/3 > 60) {
                                  if(x < realMinX) realMinX = x;
                                  if(x > realMaxX) realMaxX = x;
                              }
                          }
                     }
-                    minX = Math.max(0, realMinX - 10);
-                    maxX = Math.min(w, realMaxX + 10);
+                    // Add padding back
+                    minX = Math.max(0, realMinX - 20);
+                    maxX = Math.min(w, realMaxX + 20);
+                    minY = Math.max(0, minY - 20);
+                    maxY = Math.min(h, maxY + 20);
                 }
             } 
 
-            if (maxX <= minX || maxY <= minY) { minX = 0; maxX = w; minY = 0; maxY = h; }
+            // Fallback if auto-crop fails
+            if (maxX <= minX + 50 || maxY <= minY + 50) { 
+                 minX = 0; maxX = w; minY = 0; maxY = h; 
+                 if(!forceManualCrop) statusDiv.innerHTML = "Auto-crop failed. Using full image.";
+            }
 
             const gridW = maxX - minX;
             const gridH = maxY - minY;
             const cellW = gridW / 6;
             const cellH = gridH / 8;
 
-            // --- V27: GLOBAL CONSENSUS ---
-            // Before we chop it up, let's judge the WHOLE cropped area.
-            // Count dark vs light pixels in the cropped region.
+            // --- 2. GLOBAL CONSENSUS (Invert Decision) ---
             let darkPixels = 0;
             let totalPixels = 0;
             
-            // Sample the crop area
             const cropCanvas = document.createElement('canvas');
             cropCanvas.width = gridW;
             cropCanvas.height = gridH;
@@ -325,7 +336,7 @@
                 totalPixels++;
             }
             
-            // If > 50% of the puzzle is dark, it's Unsolved.
+            // If > 50% dark, treat as Unsolved/Dark Mode
             const isUnsolvedMode = (darkPixels / totalPixels) > 0.5;
 
             // Setup Stitched Canvas
@@ -334,14 +345,17 @@
             ctx.fillStyle = "white"; 
             ctx.fillRect(0,0,600,800);
 
-            statusDiv.innerHTML = isUnsolvedMode ? "Inverting Dark Mode..." : "Processing Light Mode...";
+            statusDiv.innerHTML = isUnsolvedMode ? "Mode: Dark Puzzle" : "Mode: Light Puzzle";
             
+            // --- 3. SLICE & STITCH ---
             for(let r=0; r<8; r++) {
                 for(let c=0; c<6; c++) {
                     const srcX = minX + (c * cellW);
                     const srcY = minY + (r * cellH);
-                    const padX = cellW * 0.15; 
-                    const padY = cellH * 0.15;
+                    
+                    // v28: Relaxed Padding (12% instead of 15%) to avoid cutting letters
+                    const padX = cellW * 0.12; 
+                    const padY = cellH * 0.12;
                     
                     const rawCanvas = document.createElement('canvas');
                     rawCanvas.width = cellW; 
@@ -350,28 +364,23 @@
                     
                     rawCtx.drawImage(lastBitmap, srcX + padX, srcY + padY, cellW - (padX*2), cellH - (padY*2), 0, 0, cellW, cellH);
 
-                    // --- PIXEL PROCESSING ---
+                    // Pixel Processing
                     const rawData = rawCtx.getImageData(0,0,cellW,cellH);
                     const rd = rawData.data;
 
                     for(let i=0; i<rd.length; i+=4) {
                         let r = rd[i], g = rd[i+1], b = rd[i+2];
                         
-                        // Apply GLOBAL Invert Decision
                         if (isUnsolvedMode) {
-                            r = 255 - r;
-                            g = 255 - g;
-                            b = 255 - b;
+                            r = 255 - r; g = 255 - g; b = 255 - b;
                         }
                         
-                        // Hard Threshold to create pure Black Ink on White Paper
                         const lum = (r + g + b) / 3;
                         const val = lum < 150 ? 0 : 255;
-                        
                         rd[i] = rd[i+1] = rd[i+2] = val;
                     }
                     
-                    // Bold (Dilation)
+                    // Bold
                     const w = cellW;
                     const copy = new Uint8ClampedArray(rd);
                     for(let i=0; i<rd.length; i+=4) {
@@ -385,12 +394,14 @@
 
                     rawCtx.putImageData(rawData, 0, 0);
 
-                    // Draw to Master
+                    // Draw to Master Stitched Canvas
+                    // Add 10px padding in the stitched view for clean separation
                     ctx.drawImage(rawCanvas, c*100 + 10, r*100 + 10, 80, 80);
                 }
             }
 
-            statusDiv.innerHTML = "Reading...";
+            // --- 4. OCR ---
+            statusDiv.innerHTML += " -> Reading...";
             const worker = await Tesseract.createWorker('eng');
             await worker.setParameters({
                 tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
@@ -406,6 +417,7 @@
             symbols.forEach(s => {
                 const cx = (s.bbox.x0 + s.bbox.x1) / 2;
                 const cy = (s.bbox.y0 + s.bbox.y1) / 2;
+                // Map back from 600x800 stitched canvas coords
                 const c = Math.floor(cx / 100);
                 const r = Math.floor(cy / 100);
 
