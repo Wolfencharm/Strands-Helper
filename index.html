@@ -1,306 +1,455 @@
-<script>
-    const gridContainer = document.getElementById('grid-container');
-    const statusDiv = document.getElementById('status');
-    const canvas = document.getElementById('proc-canvas');
-    const ctx = canvas.getContext('2d');
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Strands Sandbox v30.1</title>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: #f4f4f5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px 10px;
+            color: #18181b;
+            overscroll-behavior: none; 
+        }
 
-    let lastBitmap = null;
-    let tesseractWorker = null; // Global worker instance
+        h1 { margin: 0; font-size: 1.4rem; }
+        
+        .version { 
+            font-size: 0.9rem; 
+            color: #7c3aed; /* Violet for v30.1 */
+            font-weight: bold;
+            margin-bottom: 15px; 
+            background: #ede9fe;
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
 
-    // 1. Initialize Tesseract once on load
-    (async function initOCR() {
-        statusDiv.innerHTML = "Initializing OCR Engine...";
-        tesseractWorker = await Tesseract.createWorker('eng');
-        await tesseractWorker.setParameters({
-            tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', // Removed numbers for Strands
-            tessedit_pageseg_mode: '6' 
-        });
-        statusDiv.innerHTML = "Ready. Paste any screenshot.";
-    })();
+        #status {
+            background: white;
+            padding: 12px;
+            border-radius: 12px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            margin-bottom: 15px;
+            text-align: center;
+            font-size: 14px;
+            width: 90%;
+            max-width: 400px;
+            border: 1px solid #e4e4e7;
+        }
 
-    function initGrid() {
-        gridContainer.innerHTML = '';
-        for (let r = 0; r < 8; r++) {
-            for (let c = 0; c < 6; c++) {
-                createCell('', r, c);
+        #grid-container {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 5px;
+            padding: 12px;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.08);
+            width: 100%;
+            max-width: 360px;
+            touch-action: manipulation;
+        }
+
+        .cell {
+            aspect-ratio: 1/1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px; 
+            font-weight: 700;
+            border: 2px solid #e4e4e7;
+            border-radius: 50%;
+            cursor: pointer;
+            text-transform: uppercase;
+            user-select: none;
+            background: #fff;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .cell.selected { background-color: #dbeafe; border-color: #3b82f6; color: #1d4ed8; }
+        .cell.editing { background-color: #fef9c3; border-color: #eab308; cursor: text; }
+        .cell:empty { background-color: #fff1f2; border-color: #fecdd3; }
+
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            width: 90%;
+            max-width: 360px;
+            margin-bottom: 10px;
+        }
+
+        button.primary {
+            background-color: #2563eb;
+            color: white;
+            font-size: 16px;
+            padding: 12px;
+            border-radius: 12px;
+            border: none;
+            flex: 1;
+            font-weight: bold;
+            box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2);
+        }
+        button.primary:active { transform: scale(0.98); }
+
+        .controls { margin-top: 20px; display: flex; gap: 10px; }
+        button.secondary {
+            padding: 10px 16px;
+            background-color: #fff;
+            border: 1px solid #d4d4d8;
+            border-radius: 8px;
+            font-size: 13px;
+            color: #52525b;
+        }
+
+        #proc-canvas { 
+            display: block; 
+            margin-top: 10px; 
+            border: 2px solid #444; 
+            max-width: 90%; 
+            height: auto;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Strands Sandbox</h1>
+    <div class="version">v30.1 (PC Patch + OCR Fix)</div>
+    
+    <div class="btn-group">
+        <button class="primary" onclick="triggerPaste()">📋 Paste Image</button>
+    </div>
+
+    <div id="status">
+        Loading Core Engine...
+    </div>
+
+    <div id="grid-container"></div>
+
+    <div class="controls">
+        <button class="secondary" onclick="clearHighlights()">Clear Path</button>
+        <button class="secondary" onclick="initGrid()">Reset Board</button>
+    </div>
+    
+    <div style="font-size:10px; color:#999; margin-top:20px">
+        Robot View (Processed Input):
+    </div>
+    <canvas id="proc-canvas"></canvas>
+
+    <script>
+        const gridContainer = document.getElementById('grid-container');
+        const statusDiv = document.getElementById('status');
+        const canvas = document.getElementById('proc-canvas');
+        const ctx = canvas.getContext('2d');
+
+        let lastBitmap = null;
+        let tesseractWorker = null; // Global worker instance
+
+        // 1. Initialize Tesseract once on load
+        (async function initOCR() {
+            try {
+                tesseractWorker = await Tesseract.createWorker('eng');
+                await tesseractWorker.setParameters({
+                    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', // Removed numbers for Strands
+                    tessedit_pageseg_mode: '6' 
+                });
+                statusDiv.innerHTML = "Ready. Paste any screenshot.";
+            } catch (e) {
+                statusDiv.innerHTML = "Error loading OCR. Refresh page.";
+                console.error(e);
+            }
+        })();
+
+        function initGrid() {
+            gridContainer.innerHTML = '';
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 6; c++) {
+                    createCell('', r, c);
+                }
             }
         }
-    }
 
-    function createCell(char, r, c) {
-        const cell = document.createElement('div');
-        cell.className = 'cell';
-        cell.innerText = char;
-        cell.contentEditable = "false"; 
-        cell.addEventListener('click', (e) => {
-            if (cell.isContentEditable) return;
-            cell.classList.toggle('selected');
-        });
-        cell.addEventListener('dblclick', (e) => {
-            cell.contentEditable = "true";
-            cell.classList.add('editing');
-            cell.focus();
-        });
-        cell.addEventListener('blur', (e) => {
-            cell.contentEditable = "false";
-            cell.classList.remove('editing');
-            cell.innerText = cell.innerText.toUpperCase();
-        });
-        gridContainer.appendChild(cell);
-    }
+        function createCell(char, r, c) {
+            const cell = document.createElement('div');
+            cell.className = 'cell';
+            cell.innerText = char;
+            cell.contentEditable = "false"; 
+            cell.addEventListener('click', (e) => {
+                if (cell.isContentEditable) return;
+                cell.classList.toggle('selected');
+            });
+            cell.addEventListener('dblclick', (e) => {
+                cell.contentEditable = "true";
+                cell.classList.add('editing');
+                cell.focus();
+            });
+            cell.addEventListener('blur', (e) => {
+                cell.contentEditable = "false";
+                cell.classList.remove('editing');
+                cell.innerText = cell.innerText.toUpperCase();
+            });
+            gridContainer.appendChild(cell);
+        }
 
-    // --- PASTE HANDLERS ---
-    async function triggerPaste() {
-        try {
-            const items = await navigator.clipboard.read();
+        // --- PASTE HANDLERS ---
+        async function triggerPaste() {
+            try {
+                const items = await navigator.clipboard.read();
+                for (const item of items) {
+                    if (item.types.includes('image/png') || item.types.includes('image/jpeg')) {
+                        const blob = await item.getType(item.types.find(t => t.startsWith('image/')));
+                        processImage(blob);
+                        return;
+                    }
+                }
+                alert("No image found!");
+            } catch (err) {
+                statusDiv.innerHTML = "Clipboard blocked. Tap 'Allow Paste'.";
+            }
+        }
+        
+        document.addEventListener('paste', (e) => {
+            const items = (e.clipboardData || e.originalEvent.clipboardData).items;
             for (const item of items) {
-                if (item.types.includes('image/png') || item.types.includes('image/jpeg')) {
-                    const blob = await item.getType(item.types.find(t => t.startsWith('image/')));
-                    processImage(blob);
+                if (item.type.indexOf('image') !== -1) {
+                    processImage(item.getAsFile());
                     return;
                 }
             }
-            alert("No image found!");
-        } catch (err) {
-            statusDiv.innerHTML = "Clipboard blocked. Tap 'Allow Paste'.";
-        }
-    }
-    
-    document.addEventListener('paste', (e) => {
-        const items = (e.clipboardData || e.originalEvent.clipboardData).items;
-        for (const item of items) {
-            if (item.type.indexOf('image') !== -1) {
-                processImage(item.getAsFile());
+        });
+
+        async function processImage(blob) {
+            if (!tesseractWorker) {
+                statusDiv.innerHTML = "OCR still loading...";
                 return;
             }
+            statusDiv.innerHTML = "Processing...";
+            lastBitmap = await createImageBitmap(blob);
+            runProcessing();
         }
-    });
 
-    async function processImage(blob) {
-        if (!tesseractWorker) {
-            statusDiv.innerHTML = "OCR still loading...";
-            return;
-        }
-        statusDiv.innerHTML = "Processing...";
-        lastBitmap = await createImageBitmap(blob);
-        runProcessing();
-    }
-
-    async function runProcessing() {
-        const w = lastBitmap.width;
-        const h = lastBitmap.height;
-        
-        // Use an offscreen canvas for pixel reading
-        const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = w;
-        tempCanvas.height = h;
-        const tCtx = tempCanvas.getContext('2d');
-        tCtx.drawImage(lastBitmap, 0, 0);
-        const imgData = tCtx.getImageData(0, 0, w, h);
-        const data = imgData.data;
-
-        // --- DENSITY CLUSTERING ---
-        statusDiv.innerHTML = "Scanning layout...";
-        let activeRuns = [];
-        let currentRun = null;
-
-        // Optimization: Skip scan if image is small
-        const scanStepY = Math.max(1, Math.floor(h / 100)); 
-        
-        for(let y=0; y<h; y+=scanStepY) { 
-            let rowHasBright = false;
-            let brightCount = 0;
-            // Scan X with larger steps for speed
-            for(let x=0; x<w; x+=10) {
-                const i = (y*w + x)*4;
-                // Simple brightness check
-                if ((data[i]+data[i+1]+data[i+2])/3 > 60) {
-                    brightCount++;
-                }
-            }
-            if(brightCount > (w/10 * 0.05)) rowHasBright = true;
-
-            if(rowHasBright) {
-                if(!currentRun) currentRun = { start: y, end: y };
-                else currentRun.end = y;
-            } else {
-                if(currentRun) {
-                    if((currentRun.end - currentRun.start) > 50) activeRuns.push(currentRun);
-                    currentRun = null;
-                }
-            }
-        }
-        if(currentRun && (currentRun.end - currentRun.start) > 50) activeRuns.push(currentRun);
-
-        // Pick Tallest Block
-        let bestRun = null;
-        let maxLen = 0;
-        activeRuns.forEach(run => {
-            const len = run.end - run.start;
-            if(len > maxLen) { maxLen = len; bestRun = run; }
-        });
-
-        // Define Crop Box
-        let minX=0, maxX=w, minY=0, maxY=h;
-
-        if(bestRun) {
-            minY = bestRun.start;
-            maxY = bestRun.end;
+        async function runProcessing() {
+            const w = lastBitmap.width;
+            const h = lastBitmap.height;
             
-            let realMinX = w, realMaxX = 0;
-            // Scan interior for X bounds
-            for(let y=minY; y<maxY; y+=10) {
-                 for(let x=0; x<w; x+=10) {
-                     const i = (y*w + x)*4;
-                     if ((data[i]+data[i+1]+data[i+2])/3 > 60) {
-                         if(x < realMinX) realMinX = x;
-                         if(x > realMaxX) realMaxX = x;
+            // Use an offscreen canvas for pixel reading
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = w;
+            tempCanvas.height = h;
+            const tCtx = tempCanvas.getContext('2d');
+            tCtx.drawImage(lastBitmap, 0, 0);
+            const imgData = tCtx.getImageData(0, 0, w, h);
+            const data = imgData.data;
+
+            // --- DENSITY CLUSTERING ---
+            statusDiv.innerHTML = "Scanning layout...";
+            let activeRuns = [];
+            let currentRun = null;
+
+            // Optimization: Skip scan if image is small
+            const scanStepY = Math.max(1, Math.floor(h / 100)); 
+            
+            for(let y=0; y<h; y+=scanStepY) { 
+                let rowHasBright = false;
+                let brightCount = 0;
+                // Scan X with larger steps for speed
+                for(let x=0; x<w; x+=10) {
+                    const i = (y*w + x)*4;
+                    // Simple brightness check
+                    if ((data[i]+data[i+1]+data[i+2])/3 > 60) {
+                        brightCount++;
+                    }
+                }
+                if(brightCount > (w/10 * 0.05)) rowHasBright = true;
+
+                if(rowHasBright) {
+                    if(!currentRun) currentRun = { start: y, end: y };
+                    else currentRun.end = y;
+                } else {
+                    if(currentRun) {
+                        if((currentRun.end - currentRun.start) > 50) activeRuns.push(currentRun);
+                        currentRun = null;
+                    }
+                }
+            }
+            if(currentRun && (currentRun.end - currentRun.start) > 50) activeRuns.push(currentRun);
+
+            // Pick Tallest Block
+            let bestRun = null;
+            let maxLen = 0;
+            activeRuns.forEach(run => {
+                const len = run.end - run.start;
+                if(len > maxLen) { maxLen = len; bestRun = run; }
+            });
+
+            // Define Crop Box
+            let minX=0, maxX=w, minY=0, maxY=h;
+
+            if(bestRun) {
+                minY = bestRun.start;
+                maxY = bestRun.end;
+                
+                let realMinX = w, realMaxX = 0;
+                // Scan interior for X bounds
+                for(let y=minY; y<maxY; y+=10) {
+                     for(let x=0; x<w; x+=10) {
+                         const i = (y*w + x)*4;
+                         if ((data[i]+data[i+1]+data[i+2])/3 > 60) {
+                             if(x < realMinX) realMinX = x;
+                             if(x > realMaxX) realMaxX = x;
+                         }
                      }
-                 }
-            }
-            
-            const pad = 20; 
-            minX = Math.max(0, realMinX - pad);
-            maxX = Math.min(w, realMaxX + pad);
-            minY = Math.max(0, minY - pad);
-            maxY = Math.min(h, maxY + pad);
-        }
-
-        const gridW = maxX - minX;
-        const gridH = maxY - minY;
-        
-        // FLOORING values to ensure clean integers for canvas operations
-        const cellW = Math.floor(gridW / 6);
-        const cellH = Math.floor(gridH / 8);
-
-        // --- DARK MODE CHECK ---
-        let darkPixels = 0;
-        let totalPixels = 0;
-        
-        // Sampling just the center of the grid for speed
-        const cropCanvas = document.createElement('canvas');
-        cropCanvas.width = 100;
-        cropCanvas.height = 100;
-        const cropCtx = cropCanvas.getContext('2d');
-        // Draw a thumbnail of the crop
-        cropCtx.drawImage(lastBitmap, minX, minY, gridW, gridH, 0, 0, 100, 100);
-        const cropData = cropCtx.getImageData(0,0,100,100).data;
-
-        for(let i=0; i<cropData.length; i+=4) {
-            const lum = (cropData[i]+cropData[i+1]+cropData[i+2])/3;
-            if(lum < 80) darkPixels++; 
-            totalPixels++;
-        }
-        const isUnsolvedMode = (darkPixels / totalPixels) > 0.4;
-
-        // Setup Stitched Canvas
-        canvas.width = 600; 
-        canvas.height = 800;
-        ctx.fillStyle = "white"; 
-        ctx.fillRect(0,0,600,800);
-
-        // --- STITCH STRATEGY ---
-        for(let r=0; r<8; r++) {
-            for(let c=0; c<6; c++) {
-                const srcX = minX + (c * cellW);
-                const srcY = minY + (r * cellH);
-                
-                const padX = Math.floor(cellW * 0.12); 
-                const padY = Math.floor(cellH * 0.12);
-                
-                const rawCanvas = document.createElement('canvas');
-                rawCanvas.width = cellW; 
-                rawCanvas.height = cellH;
-                const rawCtx = rawCanvas.getContext('2d');
-                
-                // Safe Draw: Prevent source coordinates from going out of bounds
-                const sX = srcX + padX;
-                const sY = srcY + padY;
-                const sW = cellW - (padX*2);
-                const sH = cellH - (padY*2);
-
-                if (sX >= 0 && sY >= 0 && (sX+sW) <= w && (sY+sH) <= h) {
-                    rawCtx.drawImage(lastBitmap, sX, sY, sW, sH, 0, 0, cellW, cellH);
                 }
+                
+                const pad = 20; 
+                minX = Math.max(0, realMinX - pad);
+                maxX = Math.min(w, realMaxX + pad);
+                minY = Math.max(0, minY - pad);
+                maxY = Math.min(h, maxY + pad);
+            }
 
-                const rawData = rawCtx.getImageData(0,0,cellW,cellH);
-                const rd = rawData.data;
+            const gridW = maxX - minX;
+            const gridH = maxY - minY;
+            
+            // FLOORING values to ensure clean integers for canvas operations
+            const cellW = Math.floor(gridW / 6);
+            const cellH = Math.floor(gridH / 8);
 
-                // Pixel Filter
-                for(let i=0; i<rd.length; i+=4) {
-                    let r = rd[i], g = rd[i+1], b = rd[i+2];
+            // --- DARK MODE CHECK ---
+            let darkPixels = 0;
+            let totalPixels = 0;
+            
+            // Sampling just the center of the grid for speed
+            const cropCanvas = document.createElement('canvas');
+            cropCanvas.width = 100;
+            cropCanvas.height = 100;
+            const cropCtx = cropCanvas.getContext('2d');
+            // Draw a thumbnail of the crop
+            cropCtx.drawImage(lastBitmap, minX, minY, gridW, gridH, 0, 0, 100, 100);
+            const cropData = cropCtx.getImageData(0,0,100,100).data;
+
+            for(let i=0; i<cropData.length; i+=4) {
+                const lum = (cropData[i]+cropData[i+1]+cropData[i+2])/3;
+                if(lum < 80) darkPixels++; 
+                totalPixels++;
+            }
+            const isUnsolvedMode = (darkPixels / totalPixels) > 0.4;
+
+            // Setup Stitched Canvas
+            canvas.width = 600; 
+            canvas.height = 800;
+            ctx.fillStyle = "white"; 
+            ctx.fillRect(0,0,600,800);
+
+            // --- STITCH STRATEGY ---
+            for(let r=0; r<8; r++) {
+                for(let c=0; c<6; c++) {
+                    const srcX = minX + (c * cellW);
+                    const srcY = minY + (r * cellH);
                     
-                    if (isUnsolvedMode) {
-                        r = 255 - r; g = 255 - g; b = 255 - b;
+                    const padX = Math.floor(cellW * 0.12); 
+                    const padY = Math.floor(cellH * 0.12);
+                    
+                    const rawCanvas = document.createElement('canvas');
+                    rawCanvas.width = cellW; 
+                    rawCanvas.height = cellH;
+                    const rawCtx = rawCanvas.getContext('2d');
+                    
+                    // Safe Draw: Prevent source coordinates from going out of bounds
+                    const sX = srcX + padX;
+                    const sY = srcY + padY;
+                    const sW = cellW - (padX*2);
+                    const sH = cellH - (padY*2);
+
+                    if (sX >= 0 && sY >= 0 && (sX+sW) <= w && (sY+sH) <= h) {
+                        rawCtx.drawImage(lastBitmap, sX, sY, sW, sH, 0, 0, cellW, cellH);
+                    }
+
+                    const rawData = rawCtx.getImageData(0,0,cellW,cellH);
+                    const rd = rawData.data;
+
+                    // Pixel Filter
+                    for(let i=0; i<rd.length; i+=4) {
+                        let r = rd[i], g = rd[i+1], b = rd[i+2];
+                        
+                        if (isUnsolvedMode) {
+                            r = 255 - r; g = 255 - g; b = 255 - b;
+                        }
+                        
+                        const lum = (r + g + b) / 3;
+                        // Binarize
+                        const val = lum < 150 ? 0 : 255;
+                        rd[i] = rd[i+1] = rd[i+2] = val;
                     }
                     
-                    const lum = (r + g + b) / 3;
-                    // Binarize
-                    const val = lum < 150 ? 0 : 255;
-                    rd[i] = rd[i+1] = rd[i+2] = val;
-                }
-                
-                // Dilation (Bold)
-                const copy = new Uint8ClampedArray(rd);
-                for(let i=0; i<rd.length; i+=4) {
-                    // Check if pixel is black
-                    if(copy[i] === 0) {
-                        // Spread black to right
-                        if(i+4 < rd.length) { rd[i+4]=0; rd[i+5]=0; rd[i+6]=0; }
-                        // Spread black down
-                        if(i + (cellW*4) < rd.length) { 
-                            const down = i + (cellW*4);
-                            rd[down]=0; rd[down+1]=0; rd[down+2]=0; 
+                    // Dilation (Bold)
+                    const copy = new Uint8ClampedArray(rd);
+                    for(let i=0; i<rd.length; i+=4) {
+                        // Check if pixel is black
+                        if(copy[i] === 0) {
+                            // Spread black to right
+                            if(i+4 < rd.length) { rd[i+4]=0; rd[i+5]=0; rd[i+6]=0; }
+                            // Spread black down
+                            if(i + (cellW*4) < rd.length) { 
+                                const down = i + (cellW*4);
+                                rd[down]=0; rd[down+1]=0; rd[down+2]=0; 
+                            }
                         }
                     }
+
+                    rawCtx.putImageData(rawData, 0, 0);
+                    // Draw to Master
+                    ctx.drawImage(rawCanvas, c*100 + 10, r*100 + 10, 80, 80);
                 }
-
-                rawCtx.putImageData(rawData, 0, 0);
-                // Draw to Master
-                ctx.drawImage(rawCanvas, c*100 + 10, r*100 + 10, 80, 80);
             }
+
+            // --- OCR ---
+            statusDiv.innerHTML = "Reading letters...";
+            
+            const { data: { symbols } } = await tesseractWorker.recognize(canvas);
+            
+            initGrid(); // Clear previous
+            const finalGrid = Array(8).fill(null).map(() => Array(6).fill(''));
+            let foundCount = 0;
+
+            symbols.forEach(s => {
+                const cx = (s.bbox.x0 + s.bbox.x1) / 2;
+                const cy = (s.bbox.y0 + s.bbox.y1) / 2;
+                const c = Math.floor(cx / 100);
+                const r = Math.floor(cy / 100);
+
+                let char = s.text.trim().toUpperCase();
+                
+                // Corrections
+                if(char === '0') char = 'O';
+                if(char === '|') char = 'I';
+                if(char === '1') char = 'I';
+                if(char === '5') char = 'S';
+                if(char === '8') char = 'B';
+                
+                if (c >= 0 && c < 6 && r >= 0 && r < 8 && char.match(/[A-Z]/)) {
+                     finalGrid[r][c] = char;
+                     foundCount++;
+                }
+            });
+
+            // Fill UI
+            const cells = gridContainer.children;
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 6; c++) {
+                    const char = finalGrid[r][c];
+                    if(char) cells[r*6 + c].innerText = char;
+                }
+            }
+            statusDiv.innerHTML = `Done! Found ${foundCount} letters.`;
         }
 
-        // --- OCR ---
-        statusDiv.innerHTML = "Reading letters...";
-        
-        const { data: { symbols } } = await tesseractWorker.recognize(canvas);
-        
-        initGrid(); // Clear previous
-        const finalGrid = Array(8).fill(null).map(() => Array(6).fill(''));
-        let foundCount = 0;
-
-        symbols.forEach(s => {
-            const cx = (s.bbox.x0 + s.bbox.x1) / 2;
-            const cy = (s.bbox.y0 + s.bbox.y1) / 2;
-            const c = Math.floor(cx / 100);
-            const r = Math.floor(cy / 100);
-
-            let char = s.text.trim().toUpperCase();
-            
-            // Corrections
-            if(char === '0') char = 'O';
-            if(char === '|') char = 'I';
-            if(char === '1') char = 'I';
-            if(char === '5') char = 'S';
-            if(char === '8') char = 'B';
-            
-            if (c >= 0 && c < 6 && r >= 0 && r < 8 && char.match(/[A-Z]/)) {
-                 finalGrid[r][c] = char;
-                 foundCount++;
-            }
-        });
-
-        // Fill UI
-        const cells = gridContainer.children;
-        for (let r = 0; r < 8; r++) {
-            for (let c = 0; c < 6; c++) {
-                const char = finalGrid[r][c];
-                if(char) cells[r*6 + c].innerText = char;
-            }
-        }
-        statusDiv.innerHTML = `Done! Found ${foundCount} letters.`;
-    }
-
-    initGrid();
-</script>
+        initGrid();
+    </script>
+</body>
+</html>
