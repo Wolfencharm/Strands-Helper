@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Strands Sandbox v24</title>
+    <title>Strands Sandbox v25</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <style>
         body {
@@ -21,10 +21,10 @@
         
         .version { 
             font-size: 0.9rem; 
-            color: #7c3aed; /* Violet */
+            color: #b91c1c; /* Red */
             font-weight: bold;
             margin-bottom: 15px; 
-            background: #ede9fe;
+            background: #fee2e2;
             padding: 2px 8px;
             border-radius: 4px;
         }
@@ -130,7 +130,7 @@
 <body>
 
     <h1>Strands Sandbox</h1>
-    <div class="version">v24.0 (Smart Auto-Crop)</div>
+    <div class="version">v25.0 (Smart Invert)</div>
     
     <div class="btn-group">
         <button class="primary" onclick="triggerPaste()">📋 Paste</button>
@@ -138,7 +138,7 @@
     </div>
 
     <div id="status">
-        Paste any screenshot (Full or Cropped).
+        Paste any screenshot (Dark or Light).
     </div>
 
     <div id="grid-container"></div>
@@ -149,7 +149,7 @@
     </div>
     
     <div style="font-size:10px; color:#999; margin-top:20px">
-        Robot View (Stitched Sheet):
+        Robot View (Should always be Black Text on White):
     </div>
     <canvas id="proc-canvas"></canvas>
 
@@ -244,17 +244,14 @@
             const imgData = tCtx.getImageData(0, 0, w, h);
             const data = imgData.data;
 
-            // --- V24 SKYSCRAPER LOGIC ---
+            // --- SKYSCRAPER CROP LOGIC ---
             let minX=0, maxX=w, minY=0, maxY=h;
 
             if (!forceManualCrop) {
-                // 1. Vertical Projection: Find the "Tallest" continuous block of activity
-                // "Activity" = Row contains bright pixels
-                
                 let activeRuns = [];
                 let currentRun = null;
 
-                for(let y=0; y<h; y+=5) { // Scan every 5th row
+                for(let y=0; y<h; y+=5) { 
                     let rowHasBright = false;
                     for(let x=0; x<w; x+=10) {
                         const i = (y*w + x)*4;
@@ -269,33 +266,23 @@
                         else currentRun.end = y;
                     } else {
                         if(currentRun) {
-                            // If run is significant (> 100px height), save it
-                            if((currentRun.end - currentRun.start) > 100) {
-                                activeRuns.push(currentRun);
-                            }
+                            if((currentRun.end - currentRun.start) > 100) activeRuns.push(currentRun);
                             currentRun = null;
                         }
                     }
                 }
                 if(currentRun && (currentRun.end - currentRun.start) > 100) activeRuns.push(currentRun);
 
-                // Find the TALLEST run (The Grid)
-                // Ignore Short runs (Headers, Menus)
                 let bestRun = null;
                 let maxLen = 0;
                 activeRuns.forEach(run => {
                     const len = run.end - run.start;
-                    if(len > maxLen) {
-                        maxLen = len;
-                        bestRun = run;
-                    }
+                    if(len > maxLen) { maxLen = len; bestRun = run; }
                 });
 
                 if(bestRun) {
                     minY = bestRun.start;
                     maxY = bestRun.end;
-                    
-                    // 2. Now find Width (X) within that Y range
                     let realMinX = w, realMaxX = 0;
                     for(let y=minY; y<maxY; y+=10) {
                          for(let x=0; x<w; x+=10) {
@@ -311,7 +298,6 @@
                 }
             } 
 
-            // Fallback validation
             if (maxX <= minX || maxY <= minY) { minX = 0; maxX = w; minY = 0; maxY = h; }
 
             const gridW = maxX - minX;
@@ -319,20 +305,19 @@
             const cellW = gridW / 6;
             const cellH = gridH / 8;
 
-            // STITCHED CANVAS
             canvas.width = 600; 
             canvas.height = 800;
             ctx.fillStyle = "white"; 
             ctx.fillRect(0,0,600,800);
 
-            statusDiv.innerHTML = "Stitching Sheet...";
+            statusDiv.innerHTML = "Normalizing Grid...";
             
             for(let r=0; r<8; r++) {
                 for(let c=0; c<6; c++) {
                     const srcX = minX + (c * cellW);
                     const srcY = minY + (r * cellH);
-                    const padX = cellW * 0.20; 
-                    const padY = cellH * 0.20;
+                    const padX = cellW * 0.15; // Moderate Padding
+                    const padY = cellH * 0.15;
                     
                     const rawCanvas = document.createElement('canvas');
                     rawCanvas.width = cellW; 
@@ -341,36 +326,39 @@
                     
                     rawCtx.drawImage(lastBitmap, srcX + padX, srcY + padY, cellW - (padX*2), cellH - (padY*2), 0, 0, cellW, cellH);
 
-                    // Circle Mask
-                    rawCtx.globalCompositeOperation = 'destination-out';
-                    rawCtx.beginPath();
-                    rawCtx.rect(0, 0, cellW, cellH); 
-                    rawCtx.arc(cellW/2, cellH/2, cellW * 0.45, 0, Math.PI*2, true);
-                    rawCtx.fill();
-                    
-                    rawCtx.globalCompositeOperation = 'destination-over';
-                    rawCtx.fillStyle = 'white';
-                    rawCtx.fillRect(0, 0, cellW, cellH);
-                    rawCtx.globalCompositeOperation = 'source-over';
-
-                    // Adaptive Ink
+                    // --- V25 SMART INVERT ---
                     const rawData = rawCtx.getImageData(0,0,cellW,cellH);
                     const rd = rawData.data;
-                    let minLum = 255, maxLum = 0;
+                    
+                    // 1. Check Average Brightness
+                    let totalLum = 0;
+                    for(let i=0; i<rd.length; i+=4) totalLum += (rd[i]+rd[i+1]+rd[i+2])/3;
+                    const avgLum = totalLum / (rd.length/4);
+                    
+                    // 2. Decide: Invert or Not?
+                    // If avg < 100, it's a Dark Cell (Unsolved). We MUST invert it to be readable.
+                    // If avg > 100, it's a Light Cell (Solved). We leave it alone.
+                    const shouldInvert = avgLum < 100;
+
+                    // 3. Apply Filter
                     for(let i=0; i<rd.length; i+=4) {
-                        const l = (rd[i]+rd[i+1]+rd[i+2])/3;
-                        if(l < minLum) minLum = l;
-                        if(l > maxLum) maxLum = l;
-                    }
-                    for(let i=0; i<rd.length; i+=4) {
-                        const l = (rd[i]+rd[i+1]+rd[i+2])/3;
-                        let norm = 0;
-                        if (maxLum > minLum) norm = ((l - minLum) / (maxLum - minLum)) * 255;
-                        const val = norm < 128 ? 0 : 255; 
+                        let r = rd[i], g = rd[i+1], b = rd[i+2];
+                        
+                        if(shouldInvert) {
+                            // Invert Dark -> Light
+                            r = 255 - r;
+                            g = 255 - g;
+                            b = 255 - b;
+                        }
+                        
+                        // Binarize (Increase Contrast)
+                        const lum = (r+g+b)/3;
+                        const val = lum < 150 ? 0 : 255;
                         rd[i] = rd[i+1] = rd[i+2] = val;
                     }
                     
-                    // Bold
+                    // 4. Bold (Dilation)
+                    // Makes thin letters thick
                     const w = cellW;
                     const copy = new Uint8ClampedArray(rd);
                     for(let i=0; i<rd.length; i+=4) {
@@ -381,6 +369,7 @@
                             }
                         }
                     }
+
                     rawCtx.putImageData(rawData, 0, 0);
 
                     // Draw to Master
@@ -388,8 +377,7 @@
                 }
             }
 
-            // OCR
-            statusDiv.innerHTML = "Reading Sheet...";
+            statusDiv.innerHTML = "Reading...";
             const worker = await Tesseract.createWorker('eng');
             await worker.setParameters({
                 tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
