@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Strands Sandbox v31.3</title>
-    <script src="https://unpkg.com/tesseract.js@v4.0.3/dist/tesseract.min.js"></script>
+    <title>Strands Sandbox v31.4</title>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.3/dist/tesseract.min.js"></script>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -21,47 +21,37 @@
         
         .version { 
             font-size: 0.9rem; 
-            color: #ef4444; /* Red for Debug Mode */
+            color: #06b6d4; /* Cyan for v31.4 */
             font-weight: bold;
             margin-bottom: 15px; 
-            background: rgba(239, 68, 68, 0.15);
+            background: rgba(6, 182, 212, 0.15);
             padding: 2px 8px;
             border-radius: 4px;
         }
 
-        #status-box {
+        #status {
             background: #27272a;
-            padding: 15px;
+            padding: 12px;
             border-radius: 12px;
             margin-bottom: 15px;
+            text-align: left;
+            font-family: monospace;
+            font-size: 12px;
             width: 90%;
             max-width: 400px;
             border: 1px solid #3f3f46;
-        }
-
-        #status-text {
-            text-align: center;
-            font-size: 14px;
-            color: #e4e4e7;
-            margin-bottom: 8px;
-        }
-
-        #log {
-            font-family: monospace;
-            font-size: 11px;
-            color: #71717a;
-            height: 60px;
-            overflow-y: auto;
-            border-top: 1px solid #3f3f46;
-            padding-top: 5px;
-            text-align: left;
+            color: #22c55e;
+            min-height: 20px;
+            white-space: pre-wrap;
+            overflow-x: hidden;
         }
 
         #progress-bar {
             width: 0%;
             height: 4px;
-            background: #22c55e;
-            transition: width 0.2s;
+            background: #06b6d4;
+            transition: width 0.3s;
+            margin-top: 8px;
             border-radius: 2px;
         }
 
@@ -93,7 +83,14 @@
         }
 
         .cell.selected { background-color: #3b82f6; border-color: #60a5fa; color: white; }
-        .cell:empty { border-color: #71717a; opacity: 0.5; }
+
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            width: 90%;
+            max-width: 360px;
+            margin-bottom: 10px;
+        }
 
         button.primary {
             background-color: #fff;
@@ -102,19 +99,18 @@
             padding: 12px;
             border-radius: 12px;
             border: none;
-            width: 90%;
-            max-width: 360px;
+            flex: 1;
             font-weight: bold;
-            margin-bottom: 10px;
         }
         button.primary:disabled { opacity: 0.5; background: #555; color: #aaa; }
 
-        .controls { display: flex; gap: 10px; margin-top: 10px; }
+        .controls { margin-top: 20px; display: flex; gap: 10px; }
         button.secondary {
-            padding: 8px 12px;
-            background: transparent;
+            padding: 10px 16px;
+            background-color: transparent;
             border: 1px solid #52525b;
             border-radius: 8px;
+            font-size: 13px;
             color: #a1a1aa;
         }
 
@@ -122,40 +118,42 @@
             display: block; 
             margin-top: 15px; 
             border: 1px solid #333; 
-            width: 200px; 
+            width: 250px; /* Smaller preview */
             height: auto;
+            border-radius: 8px;
             background: #000; 
         }
+        .debug-label { font-size: 10px; color: #666; margin-top: 5px; }
     </style>
 </head>
 <body>
 
     <h1>Strands Sandbox</h1>
-    <div class="version">v31.3 (Network Fix)</div>
+    <div class="version">v31.4 (Analog Scan)</div>
     
-    <button id="mainBtn" class="primary" onclick="startEngine()">⚡ Force Load Engine</button>
-
-    <div id="status-box">
-        <div id="status-text">Waiting to start...</div>
-        <div id="progress-bar"></div>
-        <div id="log">Logs will appear here...</div>
+    <div class="btn-group">
+        <button id="loadBtn" class="primary" onclick="initOCR()">Load Engine</button>
+        <button id="pasteBtn" class="primary" onclick="triggerPaste()" disabled>Paste Image</button>
     </div>
+
+    <div id="status">Click 'Load Engine' to start...<div id="progress-bar"></div></div>
 
     <div id="grid-container"></div>
 
     <div class="controls">
+        <button class="secondary" onclick="clearHighlights()">Clear Path</button>
         <button class="secondary" onclick="initGrid()">Reset Board</button>
-        <button class="secondary" onclick="location.reload()">Reload Page</button>
     </div>
     
+    <div class="debug-label">ROBOT VIEW (DEBUG LINES)</div>
     <canvas id="proc-canvas"></canvas>
 
     <script>
         const gridContainer = document.getElementById('grid-container');
-        const statusText = document.getElementById('status-text');
-        const logDiv = document.getElementById('log');
+        const statusDiv = document.getElementById('status');
         const progressBar = document.getElementById('progress-bar');
-        const mainBtn = document.getElementById('mainBtn');
+        const pasteBtn = document.getElementById('pasteBtn');
+        const loadBtn = document.getElementById('loadBtn');
         const canvas = document.getElementById('proc-canvas');
         const ctx = canvas.getContext('2d');
 
@@ -163,104 +161,41 @@
         let isEngineReady = false;
 
         function log(msg) {
-            logDiv.innerHTML += `> ${msg}<br>`;
-            logDiv.scrollTop = logDiv.scrollHeight;
-            console.log(msg);
+            statusDiv.childNodes[0].textContent += "\n> " + msg;
+            statusDiv.scrollTop = statusDiv.scrollHeight;
         }
 
-        async function startEngine() {
-            if(isEngineReady) {
-                triggerPaste();
-                return;
-            }
-
-            mainBtn.disabled = true;
-            mainBtn.innerText = "Connecting...";
-            statusText.innerText = "Initializing Tesseract v4...";
+        async function initOCR() {
+            loadBtn.disabled = true;
+            statusDiv.childNodes[0].textContent = "> Initializing...";
             
             try {
-                log("Creating Worker...");
-                
-                // Explicitly point to the worker file on UNPKG to prevent 404s
-                tesseractWorker = await Tesseract.createWorker({
-                    workerPath: 'https://unpkg.com/tesseract.js@v4.0.3/dist/worker.min.js',
-                    langPath: 'https://tessdata.projectnaptha.com/4.0.0',
-                    corePath: 'https://unpkg.com/tesseract.js-core@v4.0.3/tesseract-core.wasm.js',
+                tesseractWorker = await Tesseract.createWorker('eng', 1, {
                     logger: m => {
                         if(m.status === 'recognizing text') {
-                            progressBar.style.width = (m.progress * 100) + '%';
-                            statusText.innerText = `Reading: ${Math.floor(m.progress * 100)}%`;
-                        } else {
-                            log(m.status);
-                            if(m.status.includes('loading')) progressBar.style.width = '20%';
-                            if(m.status.includes('initializing')) progressBar.style.width = '60%';
+                             progressBar.style.width = (m.progress * 100) + '%';
                         }
                     }
                 });
-
-                log("Loading Language: English...");
-                await tesseractWorker.loadLanguage('eng');
                 
-                log("Initializing API...");
-                await tesseractWorker.initialize('eng');
-                
-                log("Configuring Parameters...");
                 await tesseractWorker.setParameters({
                     tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
                     tessedit_pageseg_mode: '6' 
                 });
 
                 isEngineReady = true;
-                statusText.innerText = "System Ready.";
-                progressBar.style.width = '100%';
-                mainBtn.innerText = "📋 Paste Image";
-                mainBtn.disabled = false;
-                log("DONE. Ready for input.");
+                log("Engine Ready.");
+                loadBtn.style.display = 'none';
+                pasteBtn.disabled = false;
+                progressBar.style.width = '0%';
 
             } catch (e) {
-                log("ERROR: " + e.message);
-                statusText.innerText = "Failed to load.";
-                progressBar.style.backgroundColor = 'red';
-                mainBtn.innerText = "Retry";
-                mainBtn.disabled = false;
+                console.error(e);
+                log("Load Failed. Check connection.");
+                loadBtn.disabled = false;
             }
         }
 
-        // --- PASTE LOGIC ---
-        async function triggerPaste() {
-            try {
-                const items = await navigator.clipboard.read();
-                for (const item of items) {
-                    if (item.types.some(t => t.startsWith('image/'))) {
-                        const blob = await item.getType(item.types.find(t => t.startsWith('image/')));
-                        processImage(blob);
-                        return;
-                    }
-                }
-                alert("Clipboard is empty or blocked.");
-            } catch (err) {
-                statusText.innerText = "Tap 'Allow Paste' if prompted.";
-            }
-        }
-
-        document.addEventListener('paste', (e) => {
-            if(!isEngineReady) return;
-            const items = (e.clipboardData || e.originalEvent.clipboardData).items;
-            for (const item of items) {
-                if (item.type.indexOf('image') !== -1) {
-                    processImage(item.getAsFile());
-                    return;
-                }
-            }
-        });
-
-        async function processImage(blob) {
-            statusText.innerText = "Processing Image...";
-            const bitmap = await createImageBitmap(blob);
-            runProjectionProcessing(bitmap);
-        }
-
-        // --- GRID LOGIC ---
         function initGrid() {
             gridContainer.innerHTML = '';
             for (let r = 0; r < 8; r++) {
@@ -278,79 +213,145 @@
             gridContainer.appendChild(cell);
         }
 
-        async function runProjectionProcessing(bitmap) {
+        async function triggerPaste() {
+            if(!isEngineReady) return;
+            try {
+                const items = await navigator.clipboard.read();
+                for (const item of items) {
+                    if (item.types.some(t => t.startsWith('image/'))) {
+                        const blob = await item.getType(item.types.find(t => t.startsWith('image/')));
+                        processImage(blob);
+                        return;
+                    }
+                }
+                alert("No image on clipboard!");
+            } catch (err) {
+                log("Clipboard blocked. Tap 'Allow Paste'.");
+            }
+        }
+        
+        document.addEventListener('paste', (e) => {
+            if(!isEngineReady) return;
+            const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+            for (const item of items) {
+                if (item.type.indexOf('image') !== -1) {
+                    processImage(item.getAsFile());
+                    return;
+                }
+            }
+        });
+
+        async function processImage(blob) {
+            statusDiv.childNodes[0].textContent = "> Processing Image...";
+            const bitmap = await createImageBitmap(blob);
+            runAnalogScan(bitmap);
+        }
+
+        async function runAnalogScan(bitmap) {
             const w = bitmap.width;
             const h = bitmap.height;
-            log(`Image Size: ${w}x${h}`);
+            
+            // Draw original to canvas for reading
+            canvas.width = w;
+            canvas.height = h;
+            ctx.drawImage(bitmap, 0, 0);
+            const imgData = ctx.getImageData(0, 0, w, h);
+            const data = imgData.data;
 
-            const offCanvas = document.createElement('canvas');
-            offCanvas.width = w;
-            offCanvas.height = h;
-            const offCtx = offCanvas.getContext('2d');
-            offCtx.drawImage(bitmap, 0, 0);
-            const data = offCtx.getImageData(0, 0, w, h).data;
+            log(`Size: ${w}x${h}`);
 
-            // 1. Histogram
-            const rowSums = new Array(h).fill(0);
-            const colSums = new Array(w).fill(0);
-            const marginX = Math.floor(w * 0.1); 
+            // --- V31.4: Analog Luminance Scan ---
+            const rowEnergy = new Array(h).fill(0);
+            const colEnergy = new Array(w).fill(0);
+            
+            // Skip top 15% (Status/Header)
+            const startY = Math.floor(h * 0.15);
+            const marginX = Math.floor(w * 0.05);
 
-            for(let y=0; y<h; y++) {
+            for(let y=startY; y<h; y++) {
                 for(let x=marginX; x<w-marginX; x++) {
                     const i = (y*w + x)*4;
                     const r=data[i], g=data[i+1], b=data[i+2];
-                    if(r > 120 && g > 120 && b > 120) {
-                        rowSums[y]++;
-                        colSums[x]++;
-                    }
+                    // Analog Sum: Add brightness value directly
+                    const lum = (r+g+b)/3;
+                    rowEnergy[y] += lum;
+                    colEnergy[x] += lum;
                 }
             }
 
-            // 2. Peaks
-            function getPeaks(arr) {
+            // Find Peaks (using simple hill climbing)
+            function getPeaks(arr, count) {
+                // Normalize
+                const max = Math.max(...arr);
+                // Dynamic Threshold: 15% of Peak Energy
+                const threshold = max * 0.15; 
+                
                 let peaks = [];
-                let minVal = Math.max(...arr) * 0.25; 
-                let inPulse = false;
-                let startPulse = 0;
+                let inPeak = false;
+                let startPeak = 0;
+
                 for(let i=0; i<arr.length; i++) {
-                    if(arr[i] > minVal) {
-                        if(!inPulse) { inPulse = true; startPulse = i; }
+                    if(arr[i] > threshold) {
+                        if(!inPeak) { inPeak=true; startPeak=i; }
                     } else {
-                        if(inPulse) {
-                            inPulse = false;
-                            const width = i - startPulse;
-                            if(width > 10) peaks.push(Math.floor(startPulse + width/2));
+                        if(inPeak) {
+                            inPeak = false;
+                            const width = i - startPeak;
+                            // Filter noise: Peak must be substantial width
+                            if(width > 10) peaks.push(Math.floor(startPeak + width/2));
                         }
                     }
                 }
                 return peaks;
             }
 
-            let rowPeaks = getPeaks(rowSums);
-            let colPeaks = getPeaks(colSums);
-            log(`Peaks Found: ${rowPeaks.length} Rows, ${colPeaks.length} Cols`);
+            let rowPeaks = getPeaks(rowEnergy);
+            let colPeaks = getPeaks(colEnergy);
 
-            // Filter
+            log(`Raw Peaks: ${rowPeaks.length}R x ${colPeaks.length}C`);
+
+            // --- FILTERING ---
+            // We want exactly 8 rows, 6 cols.
+            // If we found too many, take the strongest/most regular ones.
+            // For now: Take the BOTTOM 8 rows (grid is at bottom)
             if(rowPeaks.length > 8) rowPeaks = rowPeaks.slice(-8);
+            
+            // Take CENTER 6 columns
             if(colPeaks.length > 6) {
                 const center = Math.floor(colPeaks.length/2);
                 colPeaks = colPeaks.slice(center-3, center+3);
             }
 
+            // --- DEBUG DRAWING ---
+            ctx.strokeStyle = '#00ff00';
+            ctx.lineWidth = 4;
+            // Draw horizontal lines found
+            rowPeaks.forEach(y => {
+                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+            });
+             // Draw vertical lines found
+             colPeaks.forEach(x => {
+                ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+            });
+
             if(rowPeaks.length !== 8 || colPeaks.length !== 6) {
-                statusText.innerText = "Grid Mismatch. Try cropping image.";
-                log(`Failed: Got ${rowPeaks.length}x${colPeaks.length} grid.`);
+                log("Grid Mismatch. See green lines below.");
                 return;
             }
 
-            // 3. Extract & Clean
-            canvas.width = 600;
-            canvas.height = 800;
-            ctx.fillStyle = "white";
-            ctx.fillRect(0,0,600,800);
+            // --- STITCH & EXTRACT ---
+            log("Grid Locked. Reading...");
+            
+            // Create Stitch Sheet
+            const stitchCanvas = document.createElement('canvas');
+            stitchCanvas.width = 600;
+            stitchCanvas.height = 800;
+            const sCtx = stitchCanvas.getContext('2d');
+            sCtx.fillStyle = "white";
+            sCtx.fillRect(0,0,600,800);
 
-            const avgColWidth = (colPeaks[5] - colPeaks[0]) / 5;
-            const cropSize = Math.floor(avgColWidth * 0.65); 
+            const colWidth = (colPeaks[5] - colPeaks[0]) / 5;
+            const cropSize = Math.floor(colWidth * 0.65);
 
             for(let r=0; r<8; r++) {
                 for(let c=0; c<6; c++) {
@@ -362,25 +363,26 @@
                     cellCan.height = cropSize;
                     const cCtx = cellCan.getContext('2d');
                     
-                    // Draw source
+                    // Crop
                     cCtx.drawImage(bitmap, cx-(cropSize/2), cy-(cropSize/2), cropSize, cropSize, 0, 0, cropSize, cropSize);
                     
-                    // Binarize (Invert for OCR)
+                    // Filter: Hard Binarization for OCR
                     const cData = cCtx.getImageData(0,0,cropSize,cropSize);
                     const d = cData.data;
                     for(let k=0; k<d.length; k+=4) {
-                        const lum = (d[k] + d[k+1] + d[k+2]) / 3;
-                        const val = lum > 100 ? 0 : 255;
-                        d[k] = d[k+1] = d[k+2] = val;
+                        const lum = (d[k]+d[k+1]+d[k+2])/3;
+                        // Invert: Text (bright) becomes Black (0)
+                        const val = lum > 80 ? 0 : 255; 
+                        d[k]=d[k+1]=d[k+2]=val;
                     }
                     cCtx.putImageData(cData, 0, 0);
-                    ctx.drawImage(cellCan, c*100 + 20, r*100 + 20, 60, 60);
+                    
+                    sCtx.drawImage(cellCan, c*100 + 20, r*100 + 20, 60, 60);
                 }
             }
 
-            // 4. OCR
-            statusText.innerText = "Reading Text...";
-            const { data: { symbols } } = await tesseractWorker.recognize(canvas);
+            // OCR
+            const { data: { symbols } } = await tesseractWorker.recognize(stitchCanvas);
             
             initGrid();
             const finalGrid = Array(8).fill(null).map(() => Array(6).fill(''));
@@ -393,9 +395,11 @@
                 const r = Math.floor(by / 100);
                 
                 let char = s.text.trim().toUpperCase();
+                // Fix Common OCR Errors
                 if(char==='0') char='O';
-                if(char==='|' || char==='1') char='I';
+                if(char==='|' || char==='1' || char==='l') char='I';
                 if(char==='5') char='S';
+                if(char==='8') char='B';
                 
                 if(c>=0 && c<6 && r>=0 && r<8 && char.match(/[A-Z]/)) {
                     finalGrid[r][c] = char;
@@ -410,8 +414,7 @@
                     if(ch) cells[r*6+c].innerText = ch;
                 }
             }
-            statusText.innerText = `Found ${count} letters.`;
-            log("Process Complete.");
+            log(`Done! Found ${count}/48 letters.`);
         }
 
         initGrid();
