@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Strands Sandbox v33.0</title>
+    <title>Strands Sandbox v34.0</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.3/dist/tesseract.min.js"></script>
     <style>
         body {
@@ -21,7 +21,7 @@
         
         .version { 
             font-size: 0.9rem; 
-            color: #ef4444; /* Red for v33 */
+            color: #ef4444; /* Red for v32.0 Base */
             font-weight: bold;
             margin-bottom: 15px; 
             background: rgba(239, 68, 68, 0.15);
@@ -104,15 +104,14 @@
             color: #a1a1aa;
         }
 
-        /* Debug View */
         #proc-canvas { 
             display: block; 
             margin-top: 15px; 
             border: 1px solid #333; 
-            width: 300px; 
+            width: 250px; 
             height: auto;
             border-radius: 8px;
-            background: #fff; 
+            background: #000; 
         }
         .debug-label { font-size: 10px; color: #666; margin-top: 5px; }
     </style>
@@ -120,7 +119,7 @@
 <body>
 
     <h1>Strands Sandbox</h1>
-    <div class="version">v33.0 (Density Filter)</div>
+    <div class="version">v34.0 (Smoothed Edge)</div>
     
     <div class="btn-group">
         <button id="loadBtn" class="primary" onclick="initOCR()">Load Engine</button>
@@ -136,7 +135,7 @@
         <button class="secondary" onclick="initGrid()">Reset Board</button>
     </div>
     
-    <div class="debug-label">ROBOT VIEW (OCR INPUT)</div>
+    <div class="debug-label">ROBOT VIEW (DEBUG LINES)</div>
     <canvas id="proc-canvas"></canvas>
 
     <script>
@@ -224,24 +223,23 @@
         async function processImage(blob) {
             statusDiv.textContent = "> Processing...";
             const bitmap = await createImageBitmap(blob);
-            runDensityScan(bitmap);
+            runSmoothedEdgeScan(bitmap);
         }
 
-        async function runDensityScan(bitmap) {
+        async function runSmoothedEdgeScan(bitmap) {
             const w = bitmap.width;
             const h = bitmap.height;
             
-            const offCanvas = document.createElement('canvas');
-            offCanvas.width = w;
-            offCanvas.height = h;
-            const offCtx = offCanvas.getContext('2d');
-            offCtx.drawImage(bitmap, 0, 0);
-            const imgData = offCtx.getImageData(0, 0, w, h);
+            canvas.width = w;
+            canvas.height = h;
+            ctx.drawImage(bitmap, 0, 0);
+            const imgData = ctx.getImageData(0, 0, w, h);
             const data = imgData.data;
 
             log(`Size: ${w}x${h}`);
 
-            // 1. Edge Scan (Cols)
+            // --- V34.0: V32.0 LOGIC + SMOOTHING ---
+            
             const rowEnergy = new Array(h).fill(0);
             const colEnergy = new Array(w).fill(0);
             
@@ -264,24 +262,34 @@
                 }
             }
 
-            function getPeaks(arr, count) {
-                // Smooth
-                const smoothed = new Array(arr.length).fill(0);
-                const r = 5; 
+            // NEW: Gaussian Smoothing to fix "O" split
+            function smoothArray(arr, radius) {
+                const res = new Array(arr.length).fill(0);
                 for(let i=0; i<arr.length; i++) {
-                    let s=0, c=0;
-                    for(let j=i-r; j<=i+r; j++) { if(j>=0 && j<arr.length) {s+=arr[j]; c++;}}
-                    smoothed[i] = s/c;
+                    let sum = 0;
+                    let count = 0;
+                    for(let j=i-radius; j<=i+radius; j++) {
+                        if(j>=0 && j<arr.length) { sum+=arr[j]; count++; }
+                    }
+                    res[i] = sum/count;
                 }
-                
-                const max = Math.max(...smoothed);
-                const threshold = max * 0.2; 
+                return res;
+            }
+
+            // Smooth columns by ~2% of screen width (enough to merge O edges)
+            const smoothCols = smoothArray(colEnergy, Math.floor(w * 0.02));
+            const smoothRows = smoothArray(rowEnergy, Math.floor(h * 0.01));
+
+            // Peak Finder (Standard)
+            function getPeaks(arr) {
+                const max = Math.max(...arr);
+                const threshold = max * 0.15; 
                 let peaks = [];
                 let inPeak = false;
                 let startPeak = 0;
 
-                for(let i=0; i<smoothed.length; i++) {
-                    if(smoothed[i] > threshold) {
+                for(let i=0; i<arr.length; i++) {
+                    if(arr[i] > threshold) {
                         if(!inPeak) { inPeak=true; startPeak=i; }
                     } else {
                         if(inPeak) {
@@ -294,119 +302,88 @@
                 return peaks;
             }
 
-            let rawColPeaks = getPeaks(colEnergy);
+            // Use Smoothed Data for Cols
+            let colPeaks = getPeaks(smoothCols);
 
-            // Grid Snap Cols
-            function snapToGrid(peaks, count, totalSize) {
-                if(peaks.length < 2) return null;
-                let gaps = [];
-                for(let i=1; i<peaks.length; i++) gaps.push(peaks[i] - peaks[i-1]);
-                gaps.sort((a,b) => a-b);
-                let validGap = gaps[Math.floor(gaps.length/2)];
-                if(validGap < totalSize/10 || validGap > totalSize/4) validGap = totalSize/6.5;
-
-                const first = peaks[0];
-                let bestOffset = 0;
-                let maxMatches = 0;
-                for(let offset = first - validGap; offset <= first + validGap; offset += 5) {
-                    let matches = 0;
-                    for(let i=0; i<count; i++) {
-                        const target = offset + (i * validGap);
-                        if(peaks.some(p => Math.abs(p - target) < validGap/3)) matches++;
-                    }
-                    if(matches > maxMatches) { maxMatches = matches; bestOffset = offset; }
-                }
-                const result = [];
-                for(let i=0; i<count; i++) result.push(Math.floor(bestOffset + (i * validGap)));
-                return result;
+            // Row Refinement (V32.0 Logic)
+            const refinedRowEnergy = new Array(h).fill(0);
+            for(let y=0; y<h; y++) {
+                 colPeaks.forEach(cx => {
+                      for(let ox=-2; ox<=2; ox++) {
+                          const i = (y*w + (cx+ox))*4;
+                          const val = (data[i]+data[i+1]+data[i+2])/3;
+                          refinedRowEnergy[y] += val; 
+                      }
+                 });
             }
-            
-            const finalCols = snapToGrid(rawColPeaks, 6, w);
-            
-            // --- V33: DENSITY ROW FILTER ---
-            let rawRowPeaks = getPeaks(rowEnergy);
-            
-            // Filter: Ignore rows that are "Solid Bars"
-            if(finalCols && rawRowPeaks.length > 0) {
-                // Determine average column gap
-                const colGap = finalCols[1] - finalCols[0];
-                const midPoint = Math.floor((finalCols[0] + finalCols[1]) / 2); // Space between C1 and C2
-                
-                rawRowPeaks = rawRowPeaks.filter(y => {
-                    // Check pixels in the "Valley" between Col 1 and 2
-                    // A header bar will be solid white here. A text row will be black.
-                    let valleyEnergy = 0;
-                    for(let ox = -5; ox <= 5; ox++) {
-                         const tx = midPoint + ox;
-                         const i = (y*w + tx)*4;
-                         // Check brightness/edge
-                         const lum = (data[i]+data[i+1]+data[i+2])/3;
-                         // Check edge relative to neighbor
-                         const prev = (data[i-4]+data[i-3]+data[i-2])/3;
-                         if(Math.abs(lum-prev) > 20) valleyEnergy++; 
-                    }
-                    // If high energy in the valley, it's a solid bar -> Reject
-                    return valleyEnergy < 3; 
-                });
+            // Use Smoothed Refined Rows
+            let rowPeaks = getPeaks(smoothArray(refinedRowEnergy, 5));
+
+            log(`Peaks: ${rowPeaks.length}R x ${colPeaks.length}C`);
+
+            // --- FILTERING (V32.0 Logic) ---
+            if(colPeaks.length > 6) {
+                const center = Math.floor(colPeaks.length/2);
+                colPeaks = colPeaks.slice(center-3, center+3);
             }
 
-            const finalRows = snapToGrid(rawRowPeaks, 8, h);
+            if(rowPeaks.length > 8) {
+                const gaps = [];
+                for(let i=1; i<rowPeaks.length; i++) gaps.push(rowPeaks[i]-rowPeaks[i-1]);
+                const avgGap = gaps.reduce((a,b)=>a+b,0)/gaps.length;
+                if(gaps[gaps.length-1] > avgGap * 1.5) rowPeaks.pop(); // Drop Hint
+                if(rowPeaks.length > 8) rowPeaks = rowPeaks.slice(-8); // Take Bottom 8
+            }
 
-            if(!finalCols || !finalRows) {
-                log("Grid Scan Failed.");
+            // --- DEBUG LINES ---
+            ctx.strokeStyle = '#00ff00';
+            ctx.lineWidth = 2;
+            rowPeaks.forEach(y => { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); });
+            colPeaks.forEach(x => { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); });
+
+            if(rowPeaks.length !== 8 || colPeaks.length !== 6) {
+                log(`Mismatch: ${rowPeaks.length}R x ${colPeaks.length}C. Check Lines.`);
                 return;
             }
-            log(`Locked: ${finalRows.length}R x ${finalCols.length}C`);
 
-            // --- EXTRACTION (Invert + No Threshold) ---
+            // --- EXTRACT (V32.0 Logic) ---
+            log("Locked. Extracting...");
+            
             const stitchCanvas = document.createElement('canvas');
             stitchCanvas.width = 600;
             stitchCanvas.height = 800;
             const sCtx = stitchCanvas.getContext('2d');
-            sCtx.fillStyle = "white"; 
+            sCtx.fillStyle = "white";
             sCtx.fillRect(0,0,600,800);
 
-            const colWidth = finalCols[1] - finalCols[0];
-            const rowHeight = finalRows[1] - finalRows[0];
-            const cropSize = Math.floor(Math.min(colWidth, rowHeight) * 0.70);
+            const colWidth = (colPeaks[5] - colPeaks[0]) / 5;
+            const cropSize = Math.floor(colWidth * 0.65);
 
             for(let r=0; r<8; r++) {
                 for(let c=0; c<6; c++) {
-                    const cx = finalCols[c];
-                    const cy = finalRows[r];
+                    const cx = colPeaks[c];
+                    const cy = rowPeaks[r];
                     
                     const cellCan = document.createElement('canvas');
                     cellCan.width = cropSize;
                     cellCan.height = cropSize;
                     const cCtx = cellCan.getContext('2d');
+                    
                     cCtx.drawImage(bitmap, cx-(cropSize/2), cy-(cropSize/2), cropSize, cropSize, 0, 0, cropSize, cropSize);
                     
                     const cData = cCtx.getImageData(0,0,cropSize,cropSize);
                     const d = cData.data;
-
-                    // Detect Dark Mode
-                    let totalLum = 0;
-                    for(let k=0; k<d.length; k+=4) totalLum += (d[k]+d[k+1]+d[k+2])/3;
-                    const isDark = (totalLum / (d.length/4)) < 128;
-
-                    // Simple Invert
                     for(let k=0; k<d.length; k+=4) {
-                        let r = d[k], g = d[k+1], b = d[k+2];
-                        if(isDark) { r = 255 - r; g = 255 - g; b = 255 - b; }
-                        let lum = (r+g+b)/3;
-                        d[k] = d[k+1] = d[k+2] = lum;
+                        const lum = (d[k]+d[k+1]+d[k+2])/3;
+                        // V32.0 Logic: Hard Binarization. It worked before, it will work again.
+                        const val = lum > 90 ? 0 : 255; 
+                        d[k]=d[k+1]=d[k+2]=val;
                     }
-                    
                     cCtx.putImageData(cData, 0, 0);
-                    sCtx.drawImage(cellCan, c*100 + 10, r*100 + 10, 80, 80);
+                    sCtx.drawImage(cellCan, c*100 + 20, r*100 + 20, 60, 60);
                 }
             }
 
-            canvas.width = 300;
-            canvas.height = 400;
-            ctx.drawImage(stitchCanvas, 0, 0, 300, 400);
-
-            log("Reading...");
             const { data: { symbols } } = await tesseractWorker.recognize(stitchCanvas);
             
             initGrid();
@@ -423,6 +400,7 @@
                 if(char==='0') char='O';
                 if(char==='|' || char==='1' || char==='l') char='I';
                 if(char==='5') char='S';
+                if(char==='8') char='B';
                 
                 if(c>=0 && c<6 && r>=0 && r<8 && char.match(/[A-Z]/)) {
                     finalGrid[r][c] = char;
