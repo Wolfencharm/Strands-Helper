@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Strands Sandbox v33.1</title>
+    <title>Strands Sandbox v34.0</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.3/dist/tesseract.min.js"></script>
     <style>
         body {
@@ -21,10 +21,10 @@
         
         .version { 
             font-size: 0.9rem; 
-            color: #d946ef; /* Fuchsia for v33.1 */
+            color: #facc15; /* Yellow for v34 */
             font-weight: bold;
             margin-bottom: 15px; 
-            background: rgba(217, 70, 239, 0.15);
+            background: rgba(250, 204, 21, 0.15);
             padding: 2px 8px;
             border-radius: 4px;
         }
@@ -120,7 +120,7 @@
 <body>
 
     <h1>Strands Sandbox</h1>
-    <div class="version">v33.1 (Geometric Lock)</div>
+    <div class="version">v34.0 (Rhythm Expander)</div>
     
     <div class="btn-group">
         <button id="loadBtn" class="primary" onclick="initOCR()">Load Engine</button>
@@ -224,10 +224,10 @@
         async function processImage(blob) {
             statusDiv.textContent = "> Processing...";
             const bitmap = await createImageBitmap(blob);
-            runGeometricScan(bitmap);
+            runRhythmScan(bitmap);
         }
 
-        async function runGeometricScan(bitmap) {
+        async function runRhythmScan(bitmap) {
             const w = bitmap.width;
             const h = bitmap.height;
             
@@ -241,12 +241,12 @@
 
             log(`Size: ${w}x${h}`);
 
-            // 1. Edge Scan (Cols)
+            // 1. Edge Scan (Rows & Cols)
             const rowEnergy = new Array(h).fill(0);
             const colEnergy = new Array(w).fill(0);
             
-            // V33.1: Start Higher (10%) to catch top rows
-            const startY = Math.floor(h * 0.10);
+            // Limit scan area to avoid status bar and home indicator
+            const startY = Math.floor(h * 0.1);
             const endY = Math.floor(h * 0.85);
             const startX = Math.floor(w * 0.05);
             const endX = Math.floor(w * 0.95);
@@ -266,7 +266,6 @@
             }
 
             function getPeaks(arr) {
-                // Smooth
                 const smoothed = new Array(arr.length).fill(0);
                 const r = 5; 
                 for(let i=0; i<arr.length; i++) {
@@ -275,7 +274,7 @@
                     smoothed[i] = s/c;
                 }
                 const max = Math.max(...smoothed);
-                const threshold = max * 0.15; // Sensitive
+                const threshold = max * 0.2; 
                 let peaks = [];
                 let inPeak = false;
                 let startPeak = 0;
@@ -295,91 +294,75 @@
             }
 
             let rawColPeaks = getPeaks(colEnergy);
-            
-            // Grid Snap Cols
-            function snapToGrid(peaks, count, totalSize) {
-                if(peaks.length < 2) return null;
+            let rawRowPeaks = getPeaks(rowEnergy);
+
+            // --- V34: RHYTHM EXPANSION ---
+            function expandGrid(peaks, count, isRow) {
+                if(peaks.length < 3) return null;
+                
+                // 1. Calculate Median Gap (The Beat)
                 let gaps = [];
                 for(let i=1; i<peaks.length; i++) gaps.push(peaks[i] - peaks[i-1]);
                 gaps.sort((a,b) => a-b);
-                let validGap = gaps[Math.floor(gaps.length/2)];
-                if(validGap < totalSize/10 || validGap > totalSize/4) validGap = totalSize/6.5;
+                const medianGap = gaps[Math.floor(gaps.length/2)];
+                
+                // Sanity Check on Gap
+                const minGap = isRow ? h/20 : w/10;
+                if(medianGap < minGap) return null;
 
-                const first = peaks[0];
-                let bestOffset = 0;
+                // 2. Find "Strongest" Chain
+                // We assume the middle of the peaks list contains valid grid lines
+                const centerIdx = Math.floor(peaks.length / 2);
+                const anchor = peaks[centerIdx];
+                
+                // 3. Extrapolate Outwards from Anchor
+                // We need 'count' items total. 
+                // We shift the window to align with the anchor.
+                
+                // Generate hypothetical grid lines centered on the anchor
+                // We verify which offset aligns best with existing peaks
+                let bestStart = 0;
                 let maxMatches = 0;
-                for(let offset = first - validGap; offset <= first + validGap; offset += 5) {
+                
+                // Scan a full "gap width" to find best alignment
+                const scanStart = anchor - (count * medianGap);
+                
+                for(let offset = -medianGap; offset < medianGap; offset += 2) {
                     let matches = 0;
-                    for(let i=0; i<count; i++) {
-                        const target = offset + (i * validGap);
-                        if(peaks.some(p => Math.abs(p - target) < validGap/3)) matches++;
+                    // Propose a grid: anchor + offset + (i * gap)
+                    // We want to position this grid such that it captures the maximum real peaks
+                    
+                    // Actually, easier: assume Anchor is Row X. 
+                    // Try treating Anchor as Row 0, Row 1, ... Row 7.
+                    for(let r=0; r<count; r++) {
+                        // If Anchor is row 'r', where is row 0?
+                        const start = anchor - (r * medianGap);
+                        
+                        // Count how many projected lines hit real peaks
+                        let hits = 0;
+                        for(let k=0; k<count; k++) {
+                            const pos = start + (k * medianGap);
+                            if(peaks.some(p => Math.abs(p - pos) < medianGap/3)) hits++;
+                        }
+                        if(hits > maxMatches) { maxMatches = hits; bestStart = start; }
                     }
-                    if(matches > maxMatches) { maxMatches = matches; bestOffset = offset; }
                 }
+                
                 const result = [];
-                for(let i=0; i<count; i++) result.push(Math.floor(bestOffset + (i * validGap)));
+                for(let i=0; i<count; i++) result.push(Math.floor(bestStart + (i * medianGap)));
                 return result;
             }
-            
-            const finalCols = snapToGrid(rawColPeaks, 6, w);
-            
-            // --- V33.1: GEOMETRIC ROW LOCK ---
-            let rawRowPeaks = getPeaks(rowEnergy);
-            let finalRows = null;
 
-            if(rawRowPeaks.length >= 8) {
-                // Calculate Median Gap (The "Beat")
-                let rowGaps = [];
-                for(let i=1; i<rawRowPeaks.length; i++) rowGaps.push(rawRowPeaks[i] - rawRowPeaks[i-1]);
-                rowGaps.sort((a,b)=>a-b);
-                const medianRowGap = rowGaps[Math.floor(rowGaps.length/2)];
-                
-                // Find longest chain of peaks with this gap
-                let bestChain = [];
-                
-                // Simple Clustering: Group peaks that are ~medianRowGap apart
-                // We work backwards because the bottom of the grid is usually cleaner
-                let currentChain = [rawRowPeaks[rawRowPeaks.length-1]];
-                
-                for(let i=rawRowPeaks.length-2; i>=0; i--) {
-                    const current = rawRowPeaks[i];
-                    const next = currentChain[0]; // The one below it
-                    const gap = next - current;
-                    
-                    // Tolerance: 20% of gap
-                    if(Math.abs(gap - medianRowGap) < (medianRowGap * 0.2)) {
-                        currentChain.unshift(current);
-                    } else {
-                        // Gap broken. 
-                        // If gap is HUGE (like Hint button), reset chain
-                        if(gap > medianRowGap * 1.5) {
-                            if(currentChain.length > bestChain.length) bestChain = currentChain;
-                            currentChain = [current];
-                        }
-                    }
-                }
-                if(currentChain.length > bestChain.length) bestChain = currentChain;
-                
-                // If we found a good chain of 8, use it
-                if(bestChain.length >= 8) {
-                    // Take bottom 8 of the best chain
-                    finalRows = bestChain.slice(-8); 
-                } else {
-                    // Fallback: Just take bottom 8 of raw peaks
-                    finalRows = rawRowPeaks.slice(-8);
-                }
-                
-                // Enforce spacing on the final set
-                finalRows = snapToGrid(finalRows, 8, h);
-            }
+            const finalCols = expandGrid(rawColPeaks, 6, false);
+            const finalRows = expandGrid(rawRowPeaks, 8, true);
 
             if(!finalCols || !finalRows) {
-                log("Grid Scan Failed.");
+                log("Rhythm Scan Failed.");
                 return;
             }
             log(`Locked: ${finalRows.length}R x ${finalCols.length}C`);
 
-            // --- EXTRACTION (Gamma) ---
+            // --- EXTRACTION (Gamma + Invert) ---
             const stitchCanvas = document.createElement('canvas');
             stitchCanvas.width = 600;
             stitchCanvas.height = 800;
@@ -410,12 +393,12 @@
                     for(let k=0; k<d.length; k+=4) totalLum += (d[k]+d[k+1]+d[k+2])/3;
                     const isDark = (totalLum / (d.length/4)) < 128;
 
-                    // Gamma
+                    // Gamma & Invert
                     for(let k=0; k<d.length; k+=4) {
                         let r = d[k], g = d[k+1], b = d[k+2];
                         if(isDark) { r = 255 - r; g = 255 - g; b = 255 - b; }
                         let lum = (r+g+b)/3;
-                        // Gamma 3.0
+                        // Gamma 3.0 to keep gray text visible but dark
                         const boost = Math.pow(lum / 255, 3.0) * 255;
                         d[k] = d[k+1] = d[k+2] = boost;
                     }
