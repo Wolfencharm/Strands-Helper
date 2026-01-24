@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Strands Sandbox v32.4</title>
+    <title>Strands Sandbox v32.5</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.3/dist/tesseract.min.js"></script>
     <style>
         body {
@@ -21,10 +21,10 @@
         
         .version { 
             font-size: 0.9rem; 
-            color: #f97316; /* Orange for v32.4 */
+            color: #10b981; /* Emerald for v32.5 */
             font-weight: bold;
             margin-bottom: 15px; 
-            background: rgba(249, 115, 22, 0.15);
+            background: rgba(16, 185, 129, 0.15);
             padding: 2px 8px;
             border-radius: 4px;
         }
@@ -120,7 +120,7 @@
 <body>
 
     <h1>Strands Sandbox</h1>
-    <div class="version">v32.4 (Header Filter)</div>
+    <div class="version">v32.5 (Revert + Gamma)</div>
     
     <div class="btn-group">
         <button id="loadBtn" class="primary" onclick="initOCR()">Load Engine</button>
@@ -224,14 +224,13 @@
         async function processImage(blob) {
             statusDiv.textContent = "> Processing...";
             const bitmap = await createImageBitmap(blob);
-            runAdvancedScan(bitmap);
+            runRevertedScan(bitmap);
         }
 
-        async function runAdvancedScan(bitmap) {
+        async function runRevertedScan(bitmap) {
             const w = bitmap.width;
             const h = bitmap.height;
             
-            // Create analysis context
             const offCanvas = document.createElement('canvas');
             offCanvas.width = w;
             offCanvas.height = h;
@@ -242,11 +241,10 @@
 
             log(`Size: ${w}x${h}`);
 
-            // 1. Edge Scan (Find Structure)
+            // 1. Edge Scan (Exact v32.1 Logic)
             const rowEnergy = new Array(h).fill(0);
             const colEnergy = new Array(w).fill(0);
             
-            // Safe Zone Scan
             const startY = Math.floor(h * 0.2);
             const endY = Math.floor(h * 0.8);
             const startX = Math.floor(w * 0.05);
@@ -266,7 +264,7 @@
                 }
             }
 
-            // Smooth Arrays
+            // Smooth
             function smoothArray(arr, radius) {
                 const res = new Array(arr.length).fill(0);
                 for(let i=0; i<arr.length; i++) {
@@ -282,7 +280,7 @@
             const smoothCols = smoothArray(colEnergy, Math.floor(w/40)); 
             const smoothRows = smoothArray(rowEnergy, Math.floor(h/60));
 
-            // Peak Finder
+            // Peaks
             function getPeaks(arr) {
                 const max = Math.max(...arr);
                 const threshold = max * 0.2; 
@@ -302,10 +300,9 @@
                 }
                 return peaks;
             }
-
             let rawColPeaks = getPeaks(smoothCols);
 
-            // 2. GRID SNAP & FILTERING
+            // Grid Snap (Exact v32.1 Logic)
             function snapToGrid(peaks, count, totalSize) {
                 if(peaks.length < 2) return null;
                 let gaps = [];
@@ -318,7 +315,6 @@
                 let bestOffset = 0;
                 let maxMatches = 0;
                 
-                // Scan to find best fit
                 for(let offset = first - validGap; offset <= first + validGap; offset += 5) {
                     let matches = 0;
                     for(let i=0; i<count; i++) {
@@ -334,41 +330,24 @@
             }
             
             const finalCols = snapToGrid(rawColPeaks, 6, w);
-            
-            // --- HEADER FILTER (V32.4 NEW) ---
             let rawRowPeaks = getPeaks(smoothRows);
             
-            // Refined Filtering: Check "Valleys"
-            // If the space between columns has high energy, it's a solid bar (Header)
-            if(finalCols && rawRowPeaks.length > 0) {
-                rawRowPeaks = rawRowPeaks.filter(y => {
-                    // Sample energy BETWEEN col 1 and 2
-                    const midX = Math.floor((finalCols[0] + finalCols[1]) / 2);
-                    // Sample a small window
-                    let valleyEnergy = 0;
-                    for(let ox=-5; ox<=5; ox++) {
-                        const i = (y*w + (midX+ox))*4;
-                        // Edge check again
-                        const lum = (data[i]+data[i+1]+data[i+2])/3;
-                        const prev = (data[i-4]+data[i-3]+data[i-2])/3;
-                        if(Math.abs(lum-prev)>20) valleyEnergy++;
-                    }
-                    // A solid bar has edges everywhere. A text row is empty in the valley.
-                    // If valleyEnergy is high, it's a bar.
-                    return valleyEnergy < 5; // Strict check
-                });
+            // Filter "Hint" row (same as v32.1)
+            if(rawRowPeaks.length > 2) {
+                const last = rawRowPeaks[rawRowPeaks.length-1];
+                const prev = rawRowPeaks[rawRowPeaks.length-2];
+                if((last - prev) > (h/12)*1.5) rawRowPeaks.pop();
             }
-
             const finalRows = snapToGrid(rawRowPeaks, 8, h);
 
             if(!finalCols || !finalRows) {
-                log("Scan Failed. Try cropping.");
+                log("Grid Scan Failed.");
                 return;
             }
 
             log(`Locked: ${finalRows.length}R x ${finalCols.length}C`);
 
-            // --- V32.4: GAMMA BOOST EXTRACTION ---
+            // --- V32.5 CHANGE: GAMMA EXTRACTION ---
             const stitchCanvas = document.createElement('canvas');
             stitchCanvas.width = 600;
             stitchCanvas.height = 800;
@@ -400,23 +379,20 @@
                     for(let k=0; k<d.length; k+=4) totalLum += (d[k]+d[k+1]+d[k+2])/3;
                     const isDark = (totalLum / (d.length/4)) < 128;
 
-                    // 2. Gamma Correct + Invert
+                    // 2. Gamma Correct + Invert (Soft)
                     for(let k=0; k<d.length; k+=4) {
                         let r = d[k], g = d[k+1], b = d[k+2];
                         if(isDark) {
-                            r = 255 - r;
-                            g = 255 - g;
-                            b = 255 - b;
+                            r = 255 - r; g = 255 - g; b = 255 - b;
                         }
-                        
-                        // Gamma Boost (Darken mid-tones)
-                        // Formula: 255 * (val/255)^gamma. Gamma > 1 darkens.
                         let lum = (r+g+b)/3;
                         
-                        // Apply Gamma 1.8 (Darkens the grey "unsolved" letters)
-                        lum = 255 * Math.pow(lum / 255, 1.8);
+                        // NEW: Heavy Gamma to darken text without deleting it
+                        // Text (gray) is around 100-150. BG is 255.
+                        // (lum/255)^3 pushes 150 -> 50 (Dark), while 255 stays 255.
+                        const boost = Math.pow(lum / 255, 3.0) * 255;
                         
-                        d[k] = d[k+1] = d[k+2] = lum;
+                        d[k] = d[k+1] = d[k+2] = boost;
                     }
                     
                     cCtx.putImageData(cData, 0, 0);
@@ -424,7 +400,6 @@
                 }
             }
 
-            // Show Debug Output
             canvas.width = 300;
             canvas.height = 400;
             ctx.drawImage(stitchCanvas, 0, 0, 300, 400);
