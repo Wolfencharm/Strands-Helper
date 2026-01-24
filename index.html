@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Strands Sandbox v34.0</title>
+    <title>Strands Sandbox v34.1</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.3/dist/tesseract.min.js"></script>
     <style>
         body {
@@ -21,10 +21,10 @@
         
         .version { 
             font-size: 0.9rem; 
-            color: #facc15; /* Yellow for v34 */
+            color: #38bdf8; /* Light Blue for v34.1 */
             font-weight: bold;
             margin-bottom: 15px; 
-            background: rgba(250, 204, 21, 0.15);
+            background: rgba(56, 189, 248, 0.15);
             padding: 2px 8px;
             border-radius: 4px;
         }
@@ -104,7 +104,6 @@
             color: #a1a1aa;
         }
 
-        /* Debug View */
         #proc-canvas { 
             display: block; 
             margin-top: 15px; 
@@ -120,14 +119,14 @@
 <body>
 
     <h1>Strands Sandbox</h1>
-    <div class="version">v34.0 (Rhythm Expander)</div>
+    <div class="version">v34.1 (Auto-Load)</div>
     
     <div class="btn-group">
-        <button id="loadBtn" class="primary" onclick="initOCR()">Load Engine</button>
+        <button id="loadBtn" class="primary" onclick="initOCR()" style="display:none">Retry Engine</button>
         <button id="pasteBtn" class="primary" onclick="triggerPaste()" disabled>Paste Image</button>
     </div>
 
-    <div id="status">Click 'Load Engine' to start...</div>
+    <div id="status">Initializing...</div>
 
     <div id="grid-container"></div>
 
@@ -156,8 +155,9 @@
         }
 
         async function initOCR() {
-            loadBtn.disabled = true;
-            statusDiv.textContent = "> Initializing...";
+            // Hide retry button while loading
+            loadBtn.style.display = 'none';
+            statusDiv.textContent = "> Downloading Engine...";
             
             try {
                 tesseractWorker = await Tesseract.createWorker('eng');
@@ -167,12 +167,12 @@
                 });
                 isEngineReady = true;
                 log("Engine Ready.");
-                loadBtn.style.display = 'none';
                 pasteBtn.disabled = false;
             } catch (e) {
                 console.error(e);
-                log("Load Failed.");
-                loadBtn.disabled = false;
+                log("Load Failed. Check internet.");
+                // Show retry button
+                loadBtn.style.display = 'block';
             }
         }
 
@@ -227,6 +227,7 @@
             runRhythmScan(bitmap);
         }
 
+        // --- CORE LOGIC (V34.0 PRESERVED) ---
         async function runRhythmScan(bitmap) {
             const w = bitmap.width;
             const h = bitmap.height;
@@ -245,7 +246,6 @@
             const rowEnergy = new Array(h).fill(0);
             const colEnergy = new Array(w).fill(0);
             
-            // Limit scan area to avoid status bar and home indicator
             const startY = Math.floor(h * 0.1);
             const endY = Math.floor(h * 0.85);
             const startX = Math.floor(w * 0.05);
@@ -296,56 +296,31 @@
             let rawColPeaks = getPeaks(colEnergy);
             let rawRowPeaks = getPeaks(rowEnergy);
 
-            // --- V34: RHYTHM EXPANSION ---
             function expandGrid(peaks, count, isRow) {
                 if(peaks.length < 3) return null;
                 
-                // 1. Calculate Median Gap (The Beat)
                 let gaps = [];
                 for(let i=1; i<peaks.length; i++) gaps.push(peaks[i] - peaks[i-1]);
                 gaps.sort((a,b) => a-b);
                 const medianGap = gaps[Math.floor(gaps.length/2)];
                 
-                // Sanity Check on Gap
                 const minGap = isRow ? h/20 : w/10;
                 if(medianGap < minGap) return null;
 
-                // 2. Find "Strongest" Chain
-                // We assume the middle of the peaks list contains valid grid lines
                 const centerIdx = Math.floor(peaks.length / 2);
                 const anchor = peaks[centerIdx];
                 
-                // 3. Extrapolate Outwards from Anchor
-                // We need 'count' items total. 
-                // We shift the window to align with the anchor.
-                
-                // Generate hypothetical grid lines centered on the anchor
-                // We verify which offset aligns best with existing peaks
                 let bestStart = 0;
                 let maxMatches = 0;
                 
-                // Scan a full "gap width" to find best alignment
-                const scanStart = anchor - (count * medianGap);
-                
-                for(let offset = -medianGap; offset < medianGap; offset += 2) {
-                    let matches = 0;
-                    // Propose a grid: anchor + offset + (i * gap)
-                    // We want to position this grid such that it captures the maximum real peaks
-                    
-                    // Actually, easier: assume Anchor is Row X. 
-                    // Try treating Anchor as Row 0, Row 1, ... Row 7.
-                    for(let r=0; r<count; r++) {
-                        // If Anchor is row 'r', where is row 0?
-                        const start = anchor - (r * medianGap);
-                        
-                        // Count how many projected lines hit real peaks
-                        let hits = 0;
-                        for(let k=0; k<count; k++) {
-                            const pos = start + (k * medianGap);
-                            if(peaks.some(p => Math.abs(p - pos) < medianGap/3)) hits++;
-                        }
-                        if(hits > maxMatches) { maxMatches = hits; bestStart = start; }
+                for(let r=0; r<count; r++) {
+                    const start = anchor - (r * medianGap);
+                    let hits = 0;
+                    for(let k=0; k<count; k++) {
+                        const pos = start + (k * medianGap);
+                        if(peaks.some(p => Math.abs(p - pos) < medianGap/3)) hits++;
                     }
+                    if(hits > maxMatches) { maxMatches = hits; bestStart = start; }
                 }
                 
                 const result = [];
@@ -362,7 +337,7 @@
             }
             log(`Locked: ${finalRows.length}R x ${finalCols.length}C`);
 
-            // --- EXTRACTION (Gamma + Invert) ---
+            // --- EXTRACTION ---
             const stitchCanvas = document.createElement('canvas');
             stitchCanvas.width = 600;
             stitchCanvas.height = 800;
@@ -388,17 +363,14 @@
                     const cData = cCtx.getImageData(0,0,cropSize,cropSize);
                     const d = cData.data;
 
-                    // Detect Dark Mode
                     let totalLum = 0;
                     for(let k=0; k<d.length; k+=4) totalLum += (d[k]+d[k+1]+d[k+2])/3;
                     const isDark = (totalLum / (d.length/4)) < 128;
 
-                    // Gamma & Invert
                     for(let k=0; k<d.length; k+=4) {
                         let r = d[k], g = d[k+1], b = d[k+2];
                         if(isDark) { r = 255 - r; g = 255 - g; b = 255 - b; }
                         let lum = (r+g+b)/3;
-                        // Gamma 3.0 to keep gray text visible but dark
                         const boost = Math.pow(lum / 255, 3.0) * 255;
                         d[k] = d[k+1] = d[k+2] = boost;
                     }
@@ -446,7 +418,9 @@
             log(`Success! ${count}/48 letters.`);
         }
 
+        // --- AUTO START ---
         initGrid();
+        initOCR(); // Called automatically on load
     </script>
 </body>
 </html>
