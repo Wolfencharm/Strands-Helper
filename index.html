@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Strands Sandbox v32.1</title>
+    <title>Strands Sandbox v32.2</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.3/dist/tesseract.min.js"></script>
     <style>
         body {
@@ -21,10 +21,10 @@
         
         .version { 
             font-size: 0.9rem; 
-            color: #8b5cf6; /* Violet for v32.1 */
+            color: #3b82f6; /* Blue for v32.2 */
             font-weight: bold;
             margin-bottom: 15px; 
-            background: rgba(139, 92, 246, 0.15);
+            background: rgba(59, 130, 246, 0.15);
             padding: 2px 8px;
             border-radius: 4px;
         }
@@ -104,14 +104,15 @@
             color: #a1a1aa;
         }
 
+        /* Adjusted Debug View to show the clean letters */
         #proc-canvas { 
             display: block; 
             margin-top: 15px; 
             border: 1px solid #333; 
-            width: 250px; 
+            width: 300px; 
             height: auto;
             border-radius: 8px;
-            background: #000; 
+            background: #fff; /* White background to see black text */
         }
         .debug-label { font-size: 10px; color: #666; margin-top: 5px; }
     </style>
@@ -119,7 +120,7 @@
 <body>
 
     <h1>Strands Sandbox</h1>
-    <div class="version">v32.1 (Grid Snap)</div>
+    <div class="version">v32.2 (Smart Contrast)</div>
     
     <div class="btn-group">
         <button id="loadBtn" class="primary" onclick="initOCR()">Load Engine</button>
@@ -135,7 +136,7 @@
         <button class="secondary" onclick="initGrid()">Reset Board</button>
     </div>
     
-    <div class="debug-label">ROBOT VIEW (DEBUG LINES)</div>
+    <div class="debug-label">ROBOT VIEW (OCR INPUT)</div>
     <canvas id="proc-canvas"></canvas>
 
     <script>
@@ -230,15 +231,18 @@
             const w = bitmap.width;
             const h = bitmap.height;
             
-            canvas.width = w;
-            canvas.height = h;
-            ctx.drawImage(bitmap, 0, 0);
-            const imgData = ctx.getImageData(0, 0, w, h);
+            // Create analysis context
+            const offCanvas = document.createElement('canvas');
+            offCanvas.width = w;
+            offCanvas.height = h;
+            const offCtx = offCanvas.getContext('2d');
+            offCtx.drawImage(bitmap, 0, 0);
+            const imgData = offCtx.getImageData(0, 0, w, h);
             const data = imgData.data;
 
             log(`Size: ${w}x${h}`);
 
-            // 1. Edge Scan
+            // 1. Edge Scan (Same as v32.1 - Proven Working)
             const rowEnergy = new Array(h).fill(0);
             const colEnergy = new Array(w).fill(0);
             
@@ -261,8 +265,7 @@
                 }
             }
 
-            // 2. SMOOTHING (Gaussian Blur approx)
-            // This merges "double peaks" (like the two sides of O) into one center peak
+            // Smoothing
             function smoothArray(arr, radius) {
                 const res = new Array(arr.length).fill(0);
                 for(let i=0; i<arr.length; i++) {
@@ -276,11 +279,9 @@
                 return res;
             }
 
-            // Smooth columns significantly to define the "Lane"
             const smoothCols = smoothArray(colEnergy, Math.floor(w/40)); 
             const smoothRows = smoothArray(rowEnergy, Math.floor(h/60));
 
-            // 3. Peak Finding (Standard)
             function getPeaks(arr) {
                 const max = Math.max(...arr);
                 const threshold = max * 0.2; 
@@ -304,79 +305,23 @@
 
             let rawColPeaks = getPeaks(smoothCols);
 
-            // 4. GRID SNAP (The New Logic)
-            // We assume the grid is uniform. 
+            // GRID SNAP LOGIC
             function snapToGrid(peaks, count, totalSize) {
                 if(peaks.length < 2) return null;
-                
-                // Find Leftmost and Rightmost strong signal
-                const first = peaks[0];
-                const last = peaks[peaks.length-1];
-                
-                // Calculate idealized gap
-                // We know there are (count) items, so (count-1) gaps between first and last
-                // BUT, the peaks might be Col 2 and Col 5. We don't know which is which.
-                
-                // Safer approach: Median Gap
                 let gaps = [];
                 for(let i=1; i<peaks.length; i++) gaps.push(peaks[i] - peaks[i-1]);
                 gaps.sort((a,b) => a-b);
-                const medianGap = gaps[Math.floor(gaps.length/2)];
-                
-                // Filter peaks that align with the median gap
-                // Pick the strongest peak as "Anchor" (Usually center)
-                // For now, simpler: Just use median gap and center the grid on the screen
-                
-                // Actually, let's just assume the "First" and "Last" found peaks are the bounds of the grid
-                // This is risky if we missed the edge columns.
-                
-                // Hybrid: Use the median gap to generate the grid, centered on the average peak location
-                const avgPos = peaks.reduce((a,b)=>a+b,0) / peaks.length;
-                
-                // Reconstruct 6 columns centered around avgPos with spacing medianGap
-                // Wait, if we found 5 cols, avgPos is skewed. 
-                
-                // Let's stick to "Span Division" if it looks reasonable
-                const span = last - first;
-                // If we found roughly 6 columns, span / 5 should be the gap
-                // If we found 4 columns, span / 3...
-                
-                // Simplest robust method:
-                // 1. Estimate Cell Size = Width / 7 (roughly)
-                // 2. Find the peak closest to Center Screen. Lock that as an anchor.
-                // 3. Project lines out from there.
-                
-                const approxCell = totalSize / 7; // rough guess
-                let bestAnchor = peaks[0];
-                let minDist = Infinity;
-                const centerScreen = totalSize / 2;
-                
-                peaks.forEach(p => {
-                    const d = Math.abs(p - centerScreen);
-                    if(d < minDist) { minDist = d; bestAnchor = p; }
-                });
-                
-                // Is the anchor left or right of center?
-                // Strands has even columns (6). Center line is between col 2 and 3.
-                // So Anchor should be at -0.5, -1.5, or +0.5, +1.5 units from center.
-                
-                // Let's use the MEDIAN GAP from actual data
-                let validGap = medianGap;
-                // Sanity check: Gap should be between w/10 and w/4
+                let validGap = gaps[Math.floor(gaps.length/2)];
                 if(validGap < totalSize/10 || validGap > totalSize/4) validGap = totalSize/6.5;
 
-                // Generate 6 lines. 
-                // We need to find "Start X".
-                // Try to match the generated lines to the existing peaks to find best fit offset.
+                const first = peaks[0];
                 let bestOffset = 0;
                 let maxMatches = 0;
                 
-                // Slide the grid to find best lock
                 for(let offset = first - validGap; offset <= first + validGap; offset += 5) {
                     let matches = 0;
                     for(let i=0; i<count; i++) {
                         const target = offset + (i * validGap);
-                        // Check if any peak is near this target
                         if(peaks.some(p => Math.abs(p - target) < validGap/3)) matches++;
                     }
                     if(matches > maxMatches) { maxMatches = matches; bestOffset = offset; }
@@ -387,17 +332,13 @@
                 return result;
             }
             
-            // Generate Perfect Grids
             const finalCols = snapToGrid(rawColPeaks, 6, w);
-            
-            // For rows, we do the same
             let rawRowPeaks = getPeaks(smoothRows);
             
-            // Filter "Hint" row (large gap at end)
+            // Filter Hint
             if(rawRowPeaks.length > 2) {
                 const last = rawRowPeaks[rawRowPeaks.length-1];
                 const prev = rawRowPeaks[rawRowPeaks.length-2];
-                // If gap is 2x larger than normal, drop last
                 const gap = last - prev;
                 if(gap > (h/12)*1.5) rawRowPeaks.pop();
             }
@@ -411,24 +352,18 @@
 
             log(`Locked: ${finalRows.length}R x ${finalCols.length}C`);
 
-            // --- VISUAL DEBUG ---
-            ctx.strokeStyle = '#00ff00';
-            ctx.lineWidth = 2;
-            finalRows.forEach(y => { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); });
-            finalCols.forEach(x => { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); });
-
-            // --- EXTRACT ---
+            // --- V32.2: SMART CONTRAST EXTRACTION ---
             const stitchCanvas = document.createElement('canvas');
             stitchCanvas.width = 600;
             stitchCanvas.height = 800;
             const sCtx = stitchCanvas.getContext('2d');
-            sCtx.fillStyle = "white";
+            sCtx.fillStyle = "white"; // Master background is white
             sCtx.fillRect(0,0,600,800);
 
-            // Calculate Grid Dimensions
             const colWidth = finalCols[1] - finalCols[0];
             const rowHeight = finalRows[1] - finalRows[0];
-            const cropSize = Math.floor(Math.min(colWidth, rowHeight) * 0.65);
+            // Tight crop to avoid circle borders (55% of cell size)
+            const cropSize = Math.floor(Math.min(colWidth, rowHeight) * 0.55);
 
             for(let r=0; r<8; r++) {
                 for(let c=0; c<6; c++) {
@@ -440,20 +375,67 @@
                     cellCan.height = cropSize;
                     const cCtx = cellCan.getContext('2d');
                     
+                    // Draw raw image
                     cCtx.drawImage(bitmap, cx-(cropSize/2), cy-(cropSize/2), cropSize, cropSize, 0, 0, cropSize, cropSize);
                     
                     const cData = cCtx.getImageData(0,0,cropSize,cropSize);
                     const d = cData.data;
+                    
+                    // 1. Analyze Brightness (Is this dark mode?)
+                    let totalLum = 0;
+                    let minLum = 255, maxLum = 0;
+
                     for(let k=0; k<d.length; k+=4) {
                         const lum = (d[k]+d[k+1]+d[k+2])/3;
-                        const val = lum > 90 ? 0 : 255; 
-                        d[k]=d[k+1]=d[k+2]=val;
+                        totalLum += lum;
+                        if(lum < minLum) minLum = lum;
+                        if(lum > maxLum) maxLum = lum;
                     }
+                    const avgLum = totalLum / (d.length/4);
+                    const isDarkTheme = avgLum < 128;
+
+                    // 2. Normalize & Invert
+                    // We want Output: Text=Black(0), BG=White(255)
+                    for(let k=0; k<d.length; k+=4) {
+                        let lum = (d[k]+d[k+1]+d[k+2])/3;
+
+                        if(isDarkTheme) {
+                            // Input: Text is Lighter than BG.
+                            // To make Text Black, we Invert.
+                            lum = 255 - lum; 
+                        }
+                        
+                        // Stretch Contrast
+                        // (lum - min) / (max - min)
+                        // Note: after inversion, min/max flip relative logic, but simple stretch works
+                        // Let's just do a simple levels stretch
+                        // We want darkest pixels to be 0, lightest to be 255
+                        
+                        // Re-calculate local contrast per pixel? No, simple threshold usually better for text
+                        // Let's implement Dynamic Binarization
+                        
+                        // If we inverted dark theme: Text is now Dark (low val), BG is Light (high val)
+                        // If light theme: Text is Dark (low val), BG is Light (high val)
+                        
+                        // Binarize
+                        const val = lum < 150 ? 0 : 255;
+                        d[k] = d[k+1] = d[k+2] = val;
+                    }
+                    
                     cCtx.putImageData(cData, 0, 0);
-                    sCtx.drawImage(cellCan, c*100 + 20, r*100 + 20, 60, 60);
+
+                    // 3. Upscale & Stitch
+                    // Draw onto master canvas with scaling (Target size 80px)
+                    sCtx.drawImage(cellCan, c*100 + 10, r*100 + 10, 80, 80);
                 }
             }
 
+            // Update Robot View
+            canvas.width = 300;
+            canvas.height = 400;
+            ctx.drawImage(stitchCanvas, 0, 0, 300, 400);
+
+            log("Reading...");
             const { data: { symbols } } = await tesseractWorker.recognize(stitchCanvas);
             
             initGrid();
