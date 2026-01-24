@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Strands Sandbox v32.2</title>
+    <title>Strands Sandbox v32.3</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.3/dist/tesseract.min.js"></script>
     <style>
         body {
@@ -21,10 +21,10 @@
         
         .version { 
             font-size: 0.9rem; 
-            color: #3b82f6; /* Blue for v32.2 */
+            color: #ec4899; /* Pink for v32.3 */
             font-weight: bold;
             margin-bottom: 15px; 
-            background: rgba(59, 130, 246, 0.15);
+            background: rgba(236, 72, 153, 0.15);
             padding: 2px 8px;
             border-radius: 4px;
         }
@@ -104,7 +104,7 @@
             color: #a1a1aa;
         }
 
-        /* Adjusted Debug View to show the clean letters */
+        /* Debug View */
         #proc-canvas { 
             display: block; 
             margin-top: 15px; 
@@ -112,7 +112,7 @@
             width: 300px; 
             height: auto;
             border-radius: 8px;
-            background: #fff; /* White background to see black text */
+            background: #fff; 
         }
         .debug-label { font-size: 10px; color: #666; margin-top: 5px; }
     </style>
@@ -120,7 +120,7 @@
 <body>
 
     <h1>Strands Sandbox</h1>
-    <div class="version">v32.2 (Smart Contrast)</div>
+    <div class="version">v32.3 (Raw Feed)</div>
     
     <div class="btn-group">
         <button id="loadBtn" class="primary" onclick="initOCR()">Load Engine</button>
@@ -224,10 +224,10 @@
         async function processImage(blob) {
             statusDiv.textContent = "> Processing...";
             const bitmap = await createImageBitmap(blob);
-            runSmartScan(bitmap);
+            runRawScan(bitmap);
         }
 
-        async function runSmartScan(bitmap) {
+        async function runRawScan(bitmap) {
             const w = bitmap.width;
             const h = bitmap.height;
             
@@ -242,7 +242,7 @@
 
             log(`Size: ${w}x${h}`);
 
-            // 1. Edge Scan (Same as v32.1 - Proven Working)
+            // --- REVERTED TO v32.1 DETECTION LOGIC (IT WORKED) ---
             const rowEnergy = new Array(h).fill(0);
             const colEnergy = new Array(w).fill(0);
             
@@ -251,6 +251,7 @@
             const startX = Math.floor(w * 0.05);
             const endX = Math.floor(w * 0.95);
 
+            // 1. Edge Scan
             for(let y=startY; y<endY; y++) {
                 let prevLum = 0;
                 for(let x=startX; x<endX; x++) {
@@ -265,7 +266,7 @@
                 }
             }
 
-            // Smoothing
+            // 2. Smooth
             function smoothArray(arr, radius) {
                 const res = new Array(arr.length).fill(0);
                 for(let i=0; i<arr.length; i++) {
@@ -278,17 +279,16 @@
                 }
                 return res;
             }
-
             const smoothCols = smoothArray(colEnergy, Math.floor(w/40)); 
             const smoothRows = smoothArray(rowEnergy, Math.floor(h/60));
 
+            // 3. Find Peaks
             function getPeaks(arr) {
                 const max = Math.max(...arr);
                 const threshold = max * 0.2; 
                 let peaks = [];
                 let inPeak = false;
                 let startPeak = 0;
-
                 for(let i=0; i<arr.length; i++) {
                     if(arr[i] > threshold) {
                         if(!inPeak) { inPeak=true; startPeak=i; }
@@ -302,10 +302,9 @@
                 }
                 return peaks;
             }
-
             let rawColPeaks = getPeaks(smoothCols);
 
-            // GRID SNAP LOGIC
+            // 4. Snap to Grid
             function snapToGrid(peaks, count, totalSize) {
                 if(peaks.length < 2) return null;
                 let gaps = [];
@@ -335,35 +334,32 @@
             const finalCols = snapToGrid(rawColPeaks, 6, w);
             let rawRowPeaks = getPeaks(smoothRows);
             
-            // Filter Hint
             if(rawRowPeaks.length > 2) {
                 const last = rawRowPeaks[rawRowPeaks.length-1];
                 const prev = rawRowPeaks[rawRowPeaks.length-2];
-                const gap = last - prev;
-                if(gap > (h/12)*1.5) rawRowPeaks.pop();
+                if((last - prev) > (h/12)*1.5) rawRowPeaks.pop();
             }
-            
             const finalRows = snapToGrid(rawRowPeaks, 8, h);
 
             if(!finalCols || !finalRows) {
-                log("Grid Scan Failed. Try cropping.");
+                log("Grid Scan Failed.");
                 return;
             }
 
             log(`Locked: ${finalRows.length}R x ${finalCols.length}C`);
 
-            // --- V32.2: SMART CONTRAST EXTRACTION ---
+            // --- V32.3: RAW EXTRACTION (Simplification) ---
             const stitchCanvas = document.createElement('canvas');
             stitchCanvas.width = 600;
             stitchCanvas.height = 800;
             const sCtx = stitchCanvas.getContext('2d');
-            sCtx.fillStyle = "white"; // Master background is white
+            sCtx.fillStyle = "white"; 
             sCtx.fillRect(0,0,600,800);
 
             const colWidth = finalCols[1] - finalCols[0];
             const rowHeight = finalRows[1] - finalRows[0];
-            // Tight crop to avoid circle borders (55% of cell size)
-            const cropSize = Math.floor(Math.min(colWidth, rowHeight) * 0.55);
+            // Increased crop size to 70% to avoid cutting off edges
+            const cropSize = Math.floor(Math.min(colWidth, rowHeight) * 0.70);
 
             for(let r=0; r<8; r++) {
                 for(let c=0; c<6; c++) {
@@ -375,62 +371,35 @@
                     cellCan.height = cropSize;
                     const cCtx = cellCan.getContext('2d');
                     
-                    // Draw raw image
                     cCtx.drawImage(bitmap, cx-(cropSize/2), cy-(cropSize/2), cropSize, cropSize, 0, 0, cropSize, cropSize);
                     
                     const cData = cCtx.getImageData(0,0,cropSize,cropSize);
                     const d = cData.data;
-                    
-                    // 1. Analyze Brightness (Is this dark mode?)
+
+                    // 1. Detect Dark Mode
                     let totalLum = 0;
-                    let minLum = 255, maxLum = 0;
+                    for(let k=0; k<d.length; k+=4) totalLum += (d[k]+d[k+1]+d[k+2])/3;
+                    const isDark = (totalLum / (d.length/4)) < 128;
 
+                    // 2. Simple Invert Only - NO Thresholding
                     for(let k=0; k<d.length; k+=4) {
-                        const lum = (d[k]+d[k+1]+d[k+2])/3;
-                        totalLum += lum;
-                        if(lum < minLum) minLum = lum;
-                        if(lum > maxLum) maxLum = lum;
-                    }
-                    const avgLum = totalLum / (d.length/4);
-                    const isDarkTheme = avgLum < 128;
-
-                    // 2. Normalize & Invert
-                    // We want Output: Text=Black(0), BG=White(255)
-                    for(let k=0; k<d.length; k+=4) {
-                        let lum = (d[k]+d[k+1]+d[k+2])/3;
-
-                        if(isDarkTheme) {
-                            // Input: Text is Lighter than BG.
-                            // To make Text Black, we Invert.
-                            lum = 255 - lum; 
+                        let r = d[k], g = d[k+1], b = d[k+2];
+                        if(isDark) {
+                            r = 255 - r;
+                            g = 255 - g;
+                            b = 255 - b;
                         }
-                        
-                        // Stretch Contrast
-                        // (lum - min) / (max - min)
-                        // Note: after inversion, min/max flip relative logic, but simple stretch works
-                        // Let's just do a simple levels stretch
-                        // We want darkest pixels to be 0, lightest to be 255
-                        
-                        // Re-calculate local contrast per pixel? No, simple threshold usually better for text
-                        // Let's implement Dynamic Binarization
-                        
-                        // If we inverted dark theme: Text is now Dark (low val), BG is Light (high val)
-                        // If light theme: Text is Dark (low val), BG is Light (high val)
-                        
-                        // Binarize
-                        const val = lum < 150 ? 0 : 255;
-                        d[k] = d[k+1] = d[k+2] = val;
+                        // Force Grayscale for consistency
+                        const lum = (r+g+b)/3;
+                        d[k] = d[k+1] = d[k+2] = lum;
                     }
                     
                     cCtx.putImageData(cData, 0, 0);
-
-                    // 3. Upscale & Stitch
-                    // Draw onto master canvas with scaling (Target size 80px)
                     sCtx.drawImage(cellCan, c*100 + 10, r*100 + 10, 80, 80);
                 }
             }
 
-            // Update Robot View
+            // Show Debug Output
             canvas.width = 300;
             canvas.height = 400;
             ctx.drawImage(stitchCanvas, 0, 0, 300, 400);
@@ -449,10 +418,10 @@
                 const r = Math.floor(by / 100);
                 
                 let char = s.text.trim().toUpperCase();
+                // Common OCR Fixes
                 if(char==='0') char='O';
                 if(char==='|' || char==='1' || char==='l') char='I';
                 if(char==='5') char='S';
-                if(char==='8') char='B';
                 
                 if(c>=0 && c<6 && r>=0 && r<8 && char.match(/[A-Z]/)) {
                     finalGrid[r][c] = char;
